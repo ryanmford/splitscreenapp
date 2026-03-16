@@ -25,12 +25,12 @@
   <script type="text/babel" data-type="module">
     import { createRoot } from 'react-dom/client';
     
-    import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   Layout, Play, Pause, ArrowLeft, Plus, Trash2, VolumeX, Volume2, 
   Download, X, Video, Clock,
   Settings2, ChevronLeft, ZoomIn, MoveHorizontal, MoveVertical, Speaker, Loader2,
-  RotateCcw, Pipette, Sun, Moon, FileVideo
+  RotateCcw, Pipette, Sun, Moon, FileVideo, ArrowLeftRight, BoxSelect, Palette
 } from 'lucide-react';
 
 const HIGHLIGHT_COLOR = '#1ca3ec';
@@ -51,10 +51,7 @@ const TEMPLATES = [
   { id: '1left2right', sections: 3, cols: 2, rows: 2, customSpans: { 0: { gridRow: 'span 2' } }, layout: [{x:0,y:0,w:0.5,h:1}, {x:0.5,y:0,w:0.5,h:0.5}, {x:0.5,y:0.5,w:0.5,h:0.5}] },
   { id: '3x1', sections: 3, cols: 3, rows: 1, layout: [{x:0,y:0,w:1/3,h:1}, {x:1/3,y:0,w:1/3,h:1}, {x:2/3,y:0,w:1/3,h:1}] },
   { id: '1x4', sections: 4, cols: 1, rows: 4, layout: [{x:0,y:0,w:1,h:0.25}, {x:0,y:0.25,w:1,h:0.25}, {x:0,y:0.5,w:1,h:0.25}, {x:0,y:0.75,w:1,h:0.25}] },
-  { id: '1top3bot', sections: 4, cols: 3, rows: 2, customSpans: { 0: { gridColumn: 'span 3' } }, layout: [{x:0,y:0,w:1,h:0.5}, {x:0,y:0.5,w:1/3,h:0.5}, {x:1/3,y:0.5,w:1/3,h:0.5}, {x:2/3,y:0.5,w:1/3,h:0.5}] },
   { id: '2x3', sections: 6, cols: 2, rows: 3, layout: [{x:0,y:0,w:0.5,h:1/3}, {x:0.5,y:0,w:0.5,h:1/3}, {x:0,y:1/3,w:0.5,h:1/3}, {x:0.5,y:1/3,w:0.5,h:1/3}, {x:0,y:2/3,w:0.5,h:1/3}, {x:0.5,y:2/3,w:0.5,h:1/3}] },
-  { id: '1big5small', sections: 6, cols: 3, rows: 3, customSpans: { 0: { gridColumn: 'span 2', gridRow: 'span 2' } }, layout: [{x:0,y:0,w:2/3,h:2/3}, {x:2/3,y:0,w:1/3,h:1/3}, {x:2/3,y:1/3,w:1/3,h:1/3}, {x:0,y:2/3,w:1/3,h:1/3}, {x:1/3,y:2/3,w:1/3,h:1/3}, {x:2/3,y:2/3,w:1/3,h:1/3}] },
-  { id: '3x3', sections: 9, cols: 3, rows: 3, layout: [{x:0,y:0,w:1/3,h:1/3}, {x:1/3,y:0,w:1/3,h:1/3}, {x:2/3,y:0,w:1/3,h:1/3}, {x:0,y:1/3,w:1/3,h:1/3}, {x:1/3,y:1/3,w:1/3,h:1/3}, {x:2/3,y:1/3,w:1/3,h:1/3}, {x:0,y:2/3,w:1/3,h:1/3}, {x:1/3,y:2/3,w:1/3,h:1/3}, {x:2/3,y:2/3,w:1/3,h:1/3}] },
 ];
 
 const FILTERS = [
@@ -254,6 +251,7 @@ function App() {
   
   const [isPlaying, setIsPlaying] = useState(false);
   const [activeEditIndex, setActiveEditIndex] = useState(null);
+  const [activeQuickTool, setActiveQuickTool] = useState(null); 
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportRes, setExportRes] = useState('1080p');
   const [exportFps, setExportFps] = useState(30);
@@ -468,18 +466,22 @@ function App() {
 
   const handlePanStart = (e, i) => {
     if (activeEditIndex !== i) return;
-    e.preventDefault(); 
     panRef.current = {
-        isDragging: true, startX: e.clientX, startY: e.clientY,
-        initPanX: slots[i]?.transform.x || 0, initPanY: slots[i]?.transform.y || 0,
+        isDragging: true, 
+        startX: e.clientX || (e.touches && e.touches[0].clientX), 
+        startY: e.clientY || (e.touches && e.touches[0].clientY),
+        initPanX: slots[i]?.transform.x || 0, 
+        initPanY: slots[i]?.transform.y || 0,
         rect: e.currentTarget.getBoundingClientRect()
     };
   };
 
   const handlePanMove = (e, i) => {
     if (!panRef.current.isDragging || activeEditIndex !== i) return;
-    const dx = e.clientX - panRef.current.startX;
-    const dy = e.clientY - panRef.current.startY;
+    const clientX = e.clientX || (e.touches && e.touches[0].clientX);
+    const clientY = e.clientY || (e.touches && e.touches[0].clientY);
+    const dx = clientX - panRef.current.startX;
+    const dy = clientY - panRef.current.startY;
     const rect = panRef.current.rect;
     const zoom = slots[i]?.transform.zoom || 1;
     const percentX = (dx / rect.width) * 100 / zoom;
@@ -502,6 +504,17 @@ function App() {
         } else videoEl.pause();
       }
     });
+  };
+
+  const downloadFinalMp4 = (blob, config) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `stitchpro_render_${config.res}_${Date.now()}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const handleStartExportBtn = async () => {
@@ -530,9 +543,13 @@ function App() {
         fps: exportFps, 
         duration: targetDuration
       });
+
+      // Reset UI after completion
+      setExportStatus({ active: false, phase: '', progress: 0 });
     } catch (err) {
       console.error("Export failed:", err);
       setExportStatus({ active: false, phase: '', progress: 0 });
+      setIsPreparing(false);
     }
   };
 
@@ -603,7 +620,7 @@ function App() {
       }
     }, [offscreenCanvas]);
 
-    const finishExport = new Promise((resolve) => {
+    const finishExport = new Promise((resolve, reject) => {
       worker.onmessage = (e) => {
         const { type, data } = e.data;
         if (type === 'FINISHED') {
@@ -613,9 +630,9 @@ function App() {
           resolve();
         }
         if (type === 'ERROR') {
-          setExportStatus({ active: false, phase: '', progress: 0 });
+          console.error("Worker error:", data);
           worker.terminate();
-          resolve();
+          reject(new Error(data));
         }
       };
     });
@@ -736,18 +753,9 @@ function App() {
       totalSamplesProcessed += samplesNeeded;
     }
 
+    setExportStatus(prev => ({ ...prev, phase: 'finalizing', progress: 100 }));
     worker.postMessage({ type: 'FINALIZE' });
     await finishExport;
-  };
-
-  const downloadFinalMp4 = (blob, config) => {
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `StitchPro_${config.res}.mp4`;
-    a.click();
-    setExportStatus({ active: false, phase: '', progress: 0 });
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
   };
 
   const removeVideo = (index, e) => {
@@ -784,28 +792,12 @@ function App() {
         <main className="flex-1 px-4 sm:px-8 max-w-6xl mx-auto w-full pb-20">
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-12 sm:gap-20">
             {TEMPLATES.map((template) => (
-              <button 
-                key={template.id} 
-                onClick={() => handleTemplateSelect(template)} 
-                className="relative group flex flex-col items-center transition-all duration-500 active:scale-90"
-              >
-                <div 
-                  className={`w-32 h-32 sm:w-40 sm:h-40 border-2 rounded-xl overflow-hidden transition-all duration-500 group-hover:scale-105
-                    ${isDarkMode ? 'bg-white/60 group-hover:bg-[#1ca3ec] border-white/60 group-hover:border-[#1ca3ec]' : 'bg-black/60 group-hover:bg-[#1ca3ec] border-black/60 group-hover:border-[#1ca3ec]'}`} 
-                  style={{ 
-                    display: 'grid', 
-                    gridTemplateColumns: `repeat(${template.cols}, minmax(0, 1fr))`, 
-                    gridTemplateRows: `repeat(${template.rows}, minmax(0, 1fr))`,
-                    gap: '2px',
-                    padding: '0' 
-                  }}
+              <button key={template.id} onClick={() => handleTemplateSelect(template)} className="relative group flex flex-col items-center transition-all duration-500 active:scale-90">
+                <div className={`w-32 h-32 sm:w-40 sm:h-40 border-2 rounded-xl overflow-hidden transition-all duration-500 group-hover:scale-105 ${isDarkMode ? 'bg-white/60 group-hover:bg-[#1ca3ec] border-white/60 group-hover:border-[#1ca3ec]' : 'bg-black/60 group-hover:bg-[#1ca3ec] border-black/60 group-hover:border-[#1ca3ec]'}`} 
+                  style={{ display: 'grid', gridTemplateColumns: `repeat(${template.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${template.rows}, minmax(0, 1fr))`, gap: '2px', padding: '0' }}
                 >
                   {Array.from({ length: template.sections }).map((_, i) => (
-                    <div 
-                      key={i} 
-                      className={`${isDarkMode ? 'bg-black' : 'bg-white'} transition-colors duration-500 rounded-sm`} 
-                      style={template.customSpans?.[i] || {}} 
-                    />
+                    <div key={i} className={`${isDarkMode ? 'bg-black' : 'bg-white'} transition-colors duration-500 rounded-sm`} style={template.customSpans?.[i] || {}} />
                   ))}
                 </div>
               </button>
@@ -816,114 +808,95 @@ function App() {
     );
   }
 
+  const QuickToolOverlay = ({ title, icon: Icon, value, min, max, onChange, active, onClose }) => {
+    if (!active) return null;
+    return (
+      <div className={`absolute bottom-full mb-4 left-1/2 -translate-x-1/2 w-64 p-5 rounded-[2rem] border shadow-[0_30px_60px_-15px_rgba(0,0,0,0.5)] transition-all duration-300 animate-in fade-in zoom-in slide-in-from-bottom-4 ${isDarkMode ? 'bg-[#111]/90 backdrop-blur-2xl border-white/10' : 'bg-white/95 backdrop-blur-2xl border-black/10'}`}>
+        <div className="flex justify-between items-center mb-5">
+          <div className="flex items-center gap-3">
+            <Icon size={14} className="text-blue-500" />
+            <span className="text-[10px] font-black uppercase tracking-[0.2em]">{title}</span>
+          </div>
+          <span className="text-[11px] font-bold opacity-60 tabular-nums">{value}px</span>
+        </div>
+        <input 
+          type="range" 
+          min={min} 
+          max={max} 
+          value={value} 
+          onChange={(e) => onChange(Number(e.target.value))} 
+          className={`w-full h-1.5 rounded-full appearance-none cursor-pointer ${isDarkMode ? 'bg-white/10 accent-white' : 'bg-black/10 accent-black'}`} 
+        />
+        <button onClick={onClose} className="absolute -top-2 -right-2 w-7 h-7 bg-white/10 hover:bg-white/20 rounded-full flex items-center justify-center text-white backdrop-blur-md md:hidden"><X size={12}/></button>
+      </div>
+    );
+  };
+
   return (
-    <div className={`h-screen font-sans overflow-hidden flex flex-col transition-colors duration-500 ${isDarkMode ? 'bg-[#050505] text-neutral-100' : 'bg-[#FAFAFA] text-[#050505]'}`}>
-      <header className={`h-16 px-8 flex items-center justify-between border-b transition-colors duration-500 z-50 shrink-0 ${isDarkMode ? 'border-white/5 bg-[#050505]' : 'border-black/5 bg-white'}`}>
+    <div className={`h-[100dvh] font-sans overflow-hidden flex flex-col transition-colors duration-500 ${isDarkMode ? 'bg-[#050505] text-neutral-100' : 'bg-[#FAFAFA] text-[#050505]'}`}>
+      <header className={`h-16 px-4 sm:px-8 flex items-center justify-between border-b transition-colors duration-500 z-50 shrink-0 ${isDarkMode ? 'border-white/5 bg-[#050505]' : 'border-black/5 bg-white'}`}>
         <button onClick={handleBack} className={`flex items-center gap-2.5 transition-all font-bold text-[11px] uppercase tracking-widest ${isDarkMode ? 'text-neutral-500 hover:text-white' : 'text-neutral-400 hover:text-black'}`}>
-          <ArrowLeft size={16} />
+          <ArrowLeft size={16} /> <span className="hidden sm:inline">Templates</span>
         </button>
         
-        <div className={`flex rounded-2xl p-1 border gap-1 backdrop-blur-md transition-all ${isDarkMode ? 'bg-white/5 border-white/10' : 'bg-black/5 border-black/10'}`}>
-          {ASPECT_RATIOS.map(ratio => (
-            <button 
-              key={ratio.id} 
-              onClick={() => setAspectRatio(ratio)} 
-              className={`group w-12 h-10 flex items-center justify-center rounded-xl transition-all border-2 active:scale-95 ${aspectRatio.id === ratio.id ? (isDarkMode ? 'border-white text-white shadow-xl' : 'border-black text-black shadow-xl') : (isDarkMode ? 'border-transparent text-neutral-500 hover:text-neutral-300' : 'border-transparent text-black hover:opacity-70')}`} 
-              title={ratio.name}
-            >
-              <GeometricIcon id={ratio.id} active={aspectRatio.id === ratio.id} isDarkMode={isDarkMode} />
-            </button>
-          ))}
-        </div>
-
         <div className="flex items-center gap-4">
-          <button onClick={() => setIsDarkMode(!isDarkMode)} className={`p-2 rounded-full transition-all active:scale-90 ${isDarkMode ? 'bg-white/5 text-white hover:bg-white/10' : 'bg-black/5 text-black hover:bg-black/10'}`}>
+          <div className={`hidden md:flex rounded-2xl p-1 border gap-1 backdrop-blur-md transition-all ${isDarkMode ? 'bg-white/5 border-white/10' : 'bg-black/5 border-black/10'}`}>
+            {ASPECT_RATIOS.map(ratio => (
+              <button key={ratio.id} onClick={() => setAspectRatio(ratio)} className={`group w-10 h-10 flex items-center justify-center rounded-xl transition-all border-2 ${aspectRatio.id === ratio.id ? (isDarkMode ? 'border-white bg-white/5' : 'border-black bg-black/5') : 'border-transparent text-neutral-500 hover:text-neutral-300'}`}>
+                <GeometricIcon id={ratio.id} active={aspectRatio.id === ratio.id} isDarkMode={isDarkMode} />
+              </button>
+            ))}
+          </div>
+          <button onClick={() => setIsDarkMode(!isDarkMode)} className={`p-2.5 rounded-xl transition-all active:scale-90 ${isDarkMode ? 'bg-white/5 text-white hover:bg-white/10' : 'bg-black/5 text-black hover:bg-black/10'}`}>
             {isDarkMode ? <Sun size={16} /> : <Moon size={16} />}
           </button>
-          <button 
-            onClick={() => setShowExportModal(true)} 
-            className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2 border-2 active:scale-95 ${isDarkMode ? 'border-white text-white hover:bg-white hover:text-black' : 'border-black text-black hover:bg-black hover:text-white'}`}
-          >
-            <Download size={14} strokeWidth={4} />
-            <span>EXPORT</span>
+          <button onClick={() => setShowExportModal(true)} className={`px-5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all flex items-center gap-2 border-2 active:scale-95 ${isDarkMode ? 'border-white text-white hover:bg-white hover:text-black' : 'border-black text-black hover:bg-black hover:text-white'}`}>
+            <Download size={14} strokeWidth={4} /> <span>EXPORT</span>
           </button>
         </div>
       </header>
 
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
-        <main className={`flex-1 flex flex-col overflow-hidden relative transition-colors duration-500 ${isDarkMode ? 'bg-[#0d0d0d]' : 'bg-[#F0F0F0]'}`} onDragOver={(e) => e.preventDefault()} onDrop={handleOSDrop}>
+        <main className={`flex-1 flex flex-col items-center justify-center overflow-hidden relative transition-colors duration-500 ${isDarkMode ? 'bg-[#0d0d0d]' : 'bg-[#F0F0F0]'}`} onDragOver={(e) => e.preventDefault()} onDrop={handleOSDrop}>
           <input type="file" accept="video/*" multiple ref={fileInputRef} onChange={handleFileChange} className="hidden" />
           <input type="color" ref={colorInputRef} value={bgColor} onChange={(e) => setBgColor(e.target.value)} className="hidden" />
 
-          {/* Sizing Strategy: Use min-content constraints to preserve ratio while scaling to max */}
-          <div className="flex-1 flex flex-col overflow-hidden">
-            {/* Stage: We use display: flex with item centering to allow the aspect-governed box to scale naturally */}
-            <div className="flex-1 relative flex items-center justify-center p-6 sm:p-10 md:p-14 overflow-hidden">
-              <div 
-                className={`relative shadow-[0_60px_100px_-20px_rgba(0,0,0,0.6)] transition-all duration-500 overflow-hidden ${isDarkMode ? 'ring-1 ring-white/10 bg-black' : 'ring-1 ring-black/10 bg-white'}`}
-                style={{ 
-                  display: 'grid', 
-                  gridTemplateColumns: `repeat(${selectedTemplate.cols}, minmax(0, 1fr))`, 
-                  gridTemplateRows: `repeat(${selectedTemplate.rows}, minmax(0, 1fr))`,
-                  gap: `${spacing}px`, 
-                  backgroundColor: bgColor, 
-                  padding: `${spacing}px`, 
-                  aspectRatio: aspectRatio.styleRatio,
-                  // The fix: Set dimensions to auto and use max-constraints.
-                  // This allows the aspect-ratio property to drive the actual size.
-                  width: 'auto',
-                  height: 'auto',
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                  // Forcing min-size to try and fill the larger dimension
-                  minWidth: (aspectRatio.id === 'horizontal' || aspectRatio.id === 'square') ? 'min(80%, 100%)' : '0',
-                  minHeight: (aspectRatio.id === 'vertical' || aspectRatio.id === 'portrait') ? 'min(80%, 100%)' : '0',
-                }}
+          <div className="flex-1 w-full max-w-6xl flex flex-col overflow-hidden relative" onClick={() => setActiveQuickTool(null)}>
+            <div className="flex-1 relative flex items-center justify-center p-2 sm:p-4 md:p-6 overflow-hidden">
+              <div className={`relative shadow-[0_60px_100px_-20px_rgba(0,0,0,0.6)] transition-all duration-500 overflow-hidden ${isDarkMode ? 'ring-1 ring-white/10 bg-black' : 'ring-1 ring-black/10 bg-white'}`}
+                style={{ display: 'grid', gridTemplateColumns: `repeat(${selectedTemplate.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${selectedTemplate.rows}, minmax(0, 1fr))`, gap: `${spacing}px`, backgroundColor: bgColor, padding: `${spacing}px`, aspectRatio: aspectRatio.styleRatio, width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '100%', minWidth: (aspectRatio.id === 'horizontal' || aspectRatio.id === 'square') ? 'min(80%, 100%)' : '0', minHeight: (aspectRatio.id === 'vertical' || aspectRatio.id === 'portrait') ? 'min(80%, 100%)' : '0' }}
               >
                 {Array.from({ length: selectedTemplate.sections }).map((_, i) => {
                   const slot = slots[i]; const isEditing = activeEditIndex === i;
                   return (
-                    <div 
-                      key={i} 
-                      className={`relative flex items-center justify-center group overflow-hidden transition-all duration-300 ${isEditing ? 'ring-2 ring-inset z-20' : ''} ${slot?.url && !isEditing ? 'cursor-grab active:cursor-grabbing' : ''} ${isDarkMode ? (slot?.url ? 'bg-black shadow-[inset_0_0_30px_rgba(0,0,0,1)]' : 'bg-neutral-900 border border-white/5') : (slot?.url ? 'bg-neutral-50 shadow-[inset_0_0_20px_rgba(0,0,0,0.1)]' : 'bg-neutral-200 border border-black/5')}`}
-                      style={{ 
-                        borderRadius: `${radius}px`, 
-                        ...(selectedTemplate.customSpans?.[i] || {}),
-                        borderColor: isEditing ? HIGHLIGHT_COLOR : 'transparent'
-                      }}
-                      onClick={() => !slot?.url && triggerUpload(i)} 
-                      draggable={!!slot?.url && !isEditing}
+                    <div key={i} className={`relative flex items-center justify-center group overflow-hidden transition-all duration-300 ${isEditing ? 'ring-2 ring-inset z-20' : ''} ${slot?.url && !isEditing ? 'cursor-grab active:cursor-grabbing' : ''} ${isDarkMode ? (slot?.url ? 'bg-black shadow-[inset_0_0_30px_rgba(0,0,0,1)]' : 'bg-neutral-900 border border-white/5') : (slot?.url ? 'bg-neutral-50 shadow-[inset_0_0_20px_rgba(0,0,0,0.1)]' : 'bg-neutral-200 border border-black/5')}`}
+                      style={{ borderRadius: `${radius}px`, ...(selectedTemplate.customSpans?.[i] || {}), borderColor: isEditing ? HIGHLIGHT_COLOR : 'transparent' }}
+                      onClick={(e) => { e.stopPropagation(); !slot?.url && triggerUpload(i); }} draggable={!!slot?.url && !isEditing}
                       onDragStart={(e) => handleCellDragStart(e, i)} onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleCellDrop(e, i)}
                     >
                       {slot?.url ? (
                         <>
-                          <video
-                            ref={(el) => (videoRefs.current[i] = el)} src={slot.url} 
-                            onLoadedMetadata={(e) => updateSlot(i, { duration: e.target.duration })}
+                          <video ref={(el) => (videoRefs.current[i] = el)} src={slot.url} onLoadedMetadata={(e) => updateSlot(i, { duration: e.target.duration })}
                             className={`absolute inset-0 w-full h-full object-cover pointer-events-none transition-opacity duration-700 ${activeEditIndex !== null && !isEditing ? 'opacity-30' : 'opacity-100'}`} 
-                            style={{
-                              transform: `scale(${slot.transform.zoom})`, objectPosition: `${50 - slot.transform.x}% ${50 + slot.transform.y}%`, 
-                              filter: slot.filterId && slot.filterId !== 'none' ? FILTERS.find(f => f.id === slot.filterId)?.css : 'none', 
-                              transition: isEditing ? 'opacity 0.7s ease' : 'transform 0.1s ease-out, object-position 0.1s ease-out, filter 0.6s ease, opacity 0.7s ease'
-                            }}
+                            style={{ transform: `scale(${slot.transform.zoom})`, objectPosition: `${50 - slot.transform.x}% ${50 + slot.transform.y}%`, filter: slot.filterId && slot.filterId !== 'none' ? FILTERS.find(f => f.id === slot.filterId)?.css : 'none', transition: isEditing ? 'none' : 'transform 0.1s ease-out, object-position 0.1s ease-out, filter 0.6s ease, opacity 0.7s ease' }}
                             loop playsInline muted={slot.muted}
                           />
-                          <div className="absolute bottom-3 left-3 px-2 py-1 bg-black/60 backdrop-blur-xl border border-white/10 rounded-lg text-[9px] font-black text-white tracking-widest opacity-100 group-hover:opacity-0 transition-opacity pointer-events-none flex items-center gap-1.5 shadow-2xl"><Clock size={10} /> {formatTime(slot.duration)}</div>
-                          {isEditing && (<div className="absolute inset-0 z-30 cursor-move" onPointerDown={(e) => handlePanStart(e, i)} onPointerMove={(e) => handlePanMove(e, i)} onPointerUp={handlePanEnd} onPointerLeave={handlePanEnd} />)}
+                          <div className="absolute bottom-3 left-3 px-2 py-1 bg-black/60 backdrop-blur-xl border border-white/10 rounded-lg text-[9px] font-black text-white tracking-widest opacity-100 group-hover:opacity-0 transition-opacity pointer-events-none flex items-center gap-1.5 shadow-2xl truncate max-w-[80%]"><Clock size={10} /> {formatTime(slot.duration)}</div>
+                          {isEditing && (
+                            <div className="absolute inset-0 z-30 cursor-move" onPointerDown={(e) => handlePanStart(e, i)} onPointerMove={(e) => handlePanMove(e, i)} onPointerUp={handlePanEnd} onPointerCancel={handlePanEnd} onPointerLeave={handlePanEnd} />
+                          )}
                           <div className={`absolute inset-0 bg-black/50 transition-all duration-500 flex items-center justify-center backdrop-blur-[2px] z-20 ${isEditing ? 'opacity-0 pointer-events-none' : 'opacity-0 group-hover:opacity-100'}`}>
                             <div className="absolute top-4 right-4 flex gap-3">
                               <button onClick={(e) => { e.stopPropagation(); updateSlot(i, { muted: !slot.muted }); }} className="p-3 bg-white/10 backdrop-blur-2xl border border-white/20 rounded-xl text-white hover:bg-white hover:text-black transition-all active:scale-75 shadow-xl">{slot.muted ? <VolumeX size={18} /> : <Volume2 size={18} />}</button>
                               <button onClick={(e) => removeVideo(i, e)} className="p-3 bg-white/10 backdrop-blur-2xl border border-white/20 rounded-xl text-white hover:bg-red-500 hover:border-red-500 transition-all active:scale-75 shadow-xl"><Trash2 size={18} /></button>
                             </div>
-                            <div className="flex flex-col gap-3 scale-90 group-hover:scale-100 transition-all duration-500">
-                              <button onClick={(e) => { e.stopPropagation(); setActiveEditIndex(i); }} className="px-8 py-2 border-2 border-white text-white rounded-xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-white hover:text-black transition-all shadow-2xl">Adjust</button>
-                            </div>
+                            <button onClick={(e) => { e.stopPropagation(); setActiveEditIndex(i); }} className="px-8 py-2 border-2 border-white text-white rounded-xl text-[10px] font-black uppercase tracking-[0.2em] hover:bg-white hover:text-black transition-all shadow-2xl">Adjust Clip</button>
                           </div>
                         </>
                       ) : (
                         <div className="absolute inset-0 flex items-center justify-center cursor-pointer group z-10">
-                          <div className={`w-12 h-12 rounded-full border-2 border-dashed flex items-center justify-center transition-all duration-500 ${isDarkMode ? 'border-white/10 bg-white/[0.01] group-hover:bg-[#1ca3ec]/10 group-hover:scale-110' : 'border-black/20 bg-black/[0.01] group-hover:bg-[#1ca3ec]/10 group-hover:scale-110'}`} style={{ borderColor: isEditing ? HIGHLIGHT_COLOR : (isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.5)') }}>
-                             <Plus size={20} className={`transition-colors`} style={{ color: isEditing ? HIGHLIGHT_COLOR : (isDarkMode ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.6)') }} />
+                          <div className={`w-12 h-12 rounded-full border-2 border-dashed flex items-center justify-center transition-all duration-500 ${isDarkMode ? 'border-white/10 bg-white/[0.01] group-hover:bg-[#1ca3ec]/10 group-hover:scale-110' : 'border-black/20 bg-black/[0.01] group-hover:bg-[#1ca3ec]/10 group-hover:scale-110'}`}>
+                             <Plus size={20} className={`transition-colors`} style={{ color: isDarkMode ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.6)' }} />
                           </div>
                         </div>
                       )}
@@ -933,134 +906,109 @@ function App() {
               </div>
             </div>
 
-            {/* Bottom Bar: Pure playback, no overlap */}
-            <div className={`h-24 shrink-0 flex items-center justify-center border-t transition-colors duration-500 z-40 ${isDarkMode ? 'border-white/5 bg-[#050505]' : 'border-black/5 bg-white'}`}>
-              <button 
-                onClick={toggleGlobalPlay} 
-                className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all active:scale-[0.9] border-2 shadow-[0_20px_50px_rgba(0,0,0,0.4)] ${isDarkMode ? 'bg-black border-white text-white hover:bg-white hover:text-black shadow-white/5' : 'bg-white border-black text-black hover:bg-black hover:text-white shadow-black/5'}`}
-                title={isPlaying ? "Pause (Space)" : "Preview (Space)"}
-              >
-                {isPlaying ? <Pause size={20} fill="currentColor" strokeWidth={0} /> : <Play size={20} fill="currentColor" strokeWidth={0} className="ml-1" />}
-              </button>
+            {/* Bottom Centered Tools Bar */}
+            <div className={`h-24 sm:h-28 shrink-0 flex items-center justify-center px-6 transition-colors duration-500 z-[60] relative ${isDarkMode ? 'border-t border-white/5 bg-[#050505]' : 'border-t border-black/5 bg-white'}`}>
+              
+              <div className="flex items-center justify-center gap-4 sm:gap-6">
+                {/* Tool 1: Gap */}
+                <div className="relative">
+                  <QuickToolOverlay title="Gaps" icon={ArrowLeftRight} value={spacing} min={0} max={40} active={activeQuickTool === 'spacing'} onChange={setSpacing} onClose={() => setActiveQuickTool(null)} />
+                  <button onClick={(e) => { e.stopPropagation(); setActiveQuickTool(activeQuickTool === 'spacing' ? null : 'spacing'); }} className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center transition-all active:scale-90 border-2 ${activeQuickTool === 'spacing' ? 'bg-blue-500 border-blue-400 text-white shadow-lg' : (isDarkMode ? 'bg-white/5 border-white/5 text-neutral-500 hover:text-white' : 'bg-black/5 border-black/5 text-neutral-400 hover:text-black')}`}>
+                    <ArrowLeftRight size={18} />
+                  </button>
+                </div>
+
+                {/* Tool 2: Corners */}
+                <div className="relative">
+                  <QuickToolOverlay title="Corners" icon={BoxSelect} value={radius} min={0} max={100} active={activeQuickTool === 'radius'} onChange={setRadius} onClose={() => setActiveQuickTool(null)} />
+                  <button onClick={(e) => { e.stopPropagation(); setActiveQuickTool(activeQuickTool === 'radius' ? null : 'radius'); }} className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center transition-all active:scale-90 border-2 ${activeQuickTool === 'radius' ? 'bg-blue-500 border-blue-400 text-white shadow-lg' : (isDarkMode ? 'bg-white/5 border-white/5 text-neutral-500 hover:text-white' : 'bg-black/5 border-black/5 text-neutral-400 hover:text-black')}`}>
+                    <BoxSelect size={18} />
+                  </button>
+                </div>
+
+                {/* Tool 3: Palette */}
+                <div className="relative">
+                  <div className={`absolute bottom-full mb-4 left-1/2 -translate-x-1/2 w-44 p-4 rounded-3xl border shadow-2xl animate-in fade-in zoom-in slide-in-from-bottom-2 ${activeQuickTool === 'color' ? 'block' : 'hidden'} ${isDarkMode ? 'bg-[#111] border-white/10' : 'bg-white border-black/10'}`}>
+                    <div className="flex justify-between items-center mb-4">
+                      <span className="text-[10px] font-black uppercase tracking-widest opacity-50">Background</span>
+                    </div>
+                    <div className="flex justify-center gap-3">
+                      <button onClick={() => setBgColor('#000000')} className={`w-10 h-10 rounded-full border-2 bg-black ${bgColor === '#000000' ? 'border-blue-500 scale-110 shadow-lg' : 'border-white/10'}`} />
+                      <button onClick={() => setBgColor('#ffffff')} className={`w-10 h-10 rounded-full border-2 bg-white ${bgColor === '#ffffff' ? 'border-blue-500 scale-110 shadow-lg' : 'border-black/10'}`} />
+                      <button onClick={() => colorInputRef.current.click()} className="w-10 h-10 rounded-full border-2 border-white/10 bg-neutral-800 flex items-center justify-center text-white/40 hover:text-white transition-all"><Pipette size={16}/></button>
+                    </div>
+                  </div>
+                  <button onClick={(e) => { e.stopPropagation(); setActiveQuickTool(activeQuickTool === 'color' ? null : 'color'); }} className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center transition-all active:scale-90 border-2 ${activeQuickTool === 'color' ? 'bg-blue-500 border-blue-400 text-white shadow-lg' : (isDarkMode ? 'bg-white/5 border-white/5 text-neutral-500 hover:text-white' : 'bg-black/5 border-black/5 text-neutral-400 hover:text-black')}`}>
+                    <Palette size={18} />
+                  </button>
+                </div>
+
+                {/* Tool 4: Play - Unified in the same group */}
+                <button onClick={toggleGlobalPlay} className={`w-14 h-14 sm:w-16 sm:h-16 rounded-[1.5rem] sm:rounded-[2rem] flex items-center justify-center transition-all active:scale-95 border-2 shadow-2xl ${isDarkMode ? 'bg-black border-white text-white hover:bg-white hover:text-black shadow-white/5' : 'bg-white border-black text-black hover:bg-black hover:text-white shadow-black/5'}`}>
+                  {isPlaying ? <Pause size={24} fill="currentColor" strokeWidth={0} /> : <Play size={24} fill="currentColor" strokeWidth={0} className="ml-1" />}
+                </button>
+              </div>
+
             </div>
           </div>
         </main>
 
-        <aside className={`w-full md:w-80 border-t md:border-t-0 md:border-l flex flex-col shrink-0 z-50 overflow-hidden relative shadow-2xl transition-colors duration-500 ${isDarkMode ? 'bg-[#050505] border-white/5' : 'bg-white border-black/5'}`}>
-          <div className={`absolute inset-0 flex flex-col transition-transform duration-500 ease-out ${activeEditIndex !== null ? '-translate-x-full' : 'translate-x-0'}`}>
-            <div className="p-8 flex-1 overflow-y-auto space-y-12 pt-10">
-              <div className="space-y-12">
-                <div className="space-y-5">
-                  <span className={`block text-[10px] font-black uppercase tracking-[0.2em] ${isDarkMode ? 'text-neutral-500' : 'text-neutral-400'}`}>FRAME CANVAS</span>
-                  <div className="flex gap-4 items-center">
-                    <button onClick={() => setBgColor('#000000')} className={`w-8 h-8 rounded-full border-2 transition-all hover:scale-125 ${bgColor === '#000000' ? (isDarkMode ? 'border-white shadow-lg' : 'border-black shadow-lg') : 'border-transparent opacity-40 shadow-sm'}`} style={{ backgroundColor: '#000000' }} />
-                    <button onClick={() => setBgColor('#ffffff')} className={`w-8 h-8 rounded-full border-2 transition-all hover:scale-125 ${bgColor === '#ffffff' ? (isDarkMode ? 'border-white' : 'border-black shadow-lg') : (isDarkMode ? 'border-white/20 bg-white' : 'border-black/20 bg-white shadow-inner')}`} />
-                    <button 
-                      onClick={() => colorInputRef.current.click()} 
-                      className={`w-8 h-8 rounded-full border flex items-center justify-center transition-all hover:scale-125 border-transparent ${isDarkMode ? 'bg-neutral-800' : 'bg-neutral-200'}`}
-                    >
-                      <Pipette size={12} className={isDarkMode ? 'text-neutral-400' : 'text-neutral-500'} />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="space-y-5">
-                  <div className={`flex justify-between text-[10px] font-black uppercase tracking-[0.2em] ${isDarkMode ? 'text-neutral-500' : 'text-neutral-400'}`}><span>Gap Thickness</span><span className={isDarkMode ? 'text-white' : 'text-black'}>{spacing}px</span></div>
-                  <input type="range" min="0" max="24" value={spacing} onChange={(e) => setSpacing(Number(e.target.value))} className={`w-full h-0.5 rounded-full appearance-none cursor-pointer ${isDarkMode ? 'bg-white/10 accent-neutral-400' : 'bg-black/10 accent-neutral-600'}`} />
-                </div>
-
-                <div className="space-y-5">
-                  <div className={`flex justify-between text-[10px] font-black uppercase tracking-[0.2em] ${isDarkMode ? 'text-neutral-500' : 'text-neutral-400'}`}><span>Corner Softness</span><span className={isDarkMode ? 'text-white' : 'text-black'}>{radius}px</span></div>
-                  <input type="range" min="0" max="32" value={radius} onChange={(e) => setRadius(Number(e.target.value))} className={`w-full h-0.5 rounded-full appearance-none cursor-pointer ${isDarkMode ? 'bg-white/10 accent-neutral-400' : 'bg-black/10 accent-neutral-600'}`} />
-                </div>
-              </div>
+        <aside className={`fixed inset-y-0 right-0 w-full sm:w-80 border-l flex flex-col z-[100] shadow-[0_0_100px_rgba(0,0,0,0.8)] transition-transform duration-500 ease-in-out ${activeEditIndex !== null ? 'translate-x-0' : 'translate-x-full'} ${isDarkMode ? 'bg-[#050505] border-white/5' : 'bg-white border-black/5'}`}>
+          <div className="flex flex-col h-full w-full">
+            <div className={`p-6 md:p-8 border-b flex justify-between items-center ${isDarkMode ? 'border-white/5 bg-[#080808]' : 'border-black/5 bg-neutral-50'}`}>
+              <button onClick={() => setActiveEditIndex(null)} className="flex items-center gap-3 text-neutral-400 hover:text-white transition-all font-black text-[11px] uppercase tracking-[0.3em]"><ChevronLeft size={18} /> CLOSE</button>
             </div>
-          </div>
-
-          <div className={`absolute inset-0 flex flex-col transition-transform duration-500 ease-out ${activeEditIndex !== null ? 'translate-x-0' : 'translate-x-full'} ${isDarkMode ? 'bg-[#050505]' : 'bg-white'}`}>
-            <div className={`p-8 border-b transition-colors duration-500 ${isDarkMode ? 'border-white/5' : 'border-black/5'}`}>
-              <button onClick={() => setActiveEditIndex(null)} className="flex items-center gap-3 text-neutral-400 hover:text-white transition-all font-black text-[11px] uppercase tracking-[0.3em]"><ChevronLeft size={18} /> BACK</button>
-            </div>
-            <div className="p-8 flex-1 overflow-y-auto space-y-14">
+            <div className="p-8 flex-1 overflow-y-auto space-y-12">
               <div className={`flex items-center gap-2.5 ${isDarkMode ? 'text-neutral-600' : 'text-neutral-400'}`}><Settings2 size={14} /><h3 className="font-black text-[11px] uppercase tracking-[0.4em]">Clip Inspector</h3></div>
               {activeEditIndex !== null && slots[activeEditIndex] && (
-                <div className="space-y-12">
-                  <div className="space-y-5">
-                    <div className={`flex justify-between text-[10px] font-black uppercase tracking-[0.2em] ${isDarkMode ? 'text-neutral-500' : 'text-neutral-400'}`}><span className="flex items-center gap-2"><Clock size={14} /> Playback Offset</span><span className={`tabular-nums px-3 py-1 rounded-lg shadow-inner ${isDarkMode ? 'text-white bg-white/10' : 'text-black bg-black/10'}`}>{formatTime(slots[activeEditIndex].transform.startTime)}</span></div>
+                <div className="space-y-10 pb-20">
+                  <div className="space-y-4">
+                    <div className="flex justify-between text-[10px] font-black uppercase tracking-widest opacity-60"><span>Time Offset</span><span>{formatTime(slots[activeEditIndex].transform.startTime)}</span></div>
                     <input type="range" min="0" max={Math.max(0, slots[activeEditIndex].duration - 0.1)} step="0.05" value={slots[activeEditIndex].transform.startTime} onChange={(e) => {
                       const val = Number(e.target.value); updateSlot(activeEditIndex, { transform: { ...slots[activeEditIndex].transform, startTime: val } });
                       if (videoRefs.current[activeEditIndex]) videoRefs.current[activeEditIndex].currentTime = val;
-                    }} className={`w-full h-0.5 rounded-full appearance-none cursor-pointer ${isDarkMode ? 'bg-white/10 accent-neutral-400' : 'bg-black/10 accent-neutral-600'}`} />
+                    }} className={`w-full h-1.5 rounded-full appearance-none bg-white/10 accent-blue-500`} />
                   </div>
-                  
-                  <div className="space-y-6 pt-10 border-t transition-colors duration-500" style={{ borderColor: isDarkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' }}>
-                    <div className={`flex items-center gap-2 ${isDarkMode ? 'text-neutral-600' : 'text-neutral-400'}`}><Layout size={14} /><h3 className="font-black text-[11px] uppercase tracking-[0.4em]">Color Grade</h3></div>
+                  <div className="space-y-5">
                     <div className="grid grid-cols-3 gap-2">
                       {FILTERS.map(f => (
-                        <button 
-                          key={f.id} 
-                          onClick={() => updateSlot(activeEditIndex, { filterId: f.id })} 
-                          className={`py-3 px-1 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all border active:scale-95 ${slots[activeEditIndex].filterId === f.id ? (isDarkMode ? 'border-white text-white shadow-inner' : 'border-black text-black shadow-inner') : (isDarkMode ? 'border-transparent text-neutral-500 hover:text-neutral-300' : 'border-transparent text-neutral-400 hover:text-black')}`}
-                        >
-                          {f.name}
-                        </button>
+                        <button key={f.id} onClick={() => updateSlot(activeEditIndex, { filterId: f.id })} className={`py-3 rounded-xl text-[10px] font-black uppercase border transition-all truncate px-1 ${slots[activeEditIndex].filterId === f.id ? 'border-blue-500 text-blue-500 bg-blue-500/10' : 'border-white/10 text-neutral-500 hover:border-white/30'}`}>{f.name}</button>
                       ))}
                     </div>
                   </div>
-
-                  <div className="space-y-5 pt-10 border-t transition-colors duration-500" style={{ borderColor: isDarkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' }}>
-                    <div className={`flex justify-between text-[10px] font-black uppercase tracking-[0.2em] ${isDarkMode ? 'text-neutral-500' : 'text-neutral-400'}`}><span className="flex items-center gap-2"><ZoomIn size={14} /> Zoom</span><span className={isDarkMode ? 'text-white' : 'text-black'}>{slots[activeEditIndex].transform.zoom.toFixed(2)}x</span></div>
-                    <input type="range" min="1" max="5" step="0.01" value={slots[activeEditIndex].transform.zoom} onChange={(e) => updateSlot(activeEditIndex, { transform: { ...slots[activeEditIndex].transform, zoom: Number(e.target.value) } })} className={`w-full h-0.5 rounded-full appearance-none cursor-pointer ${isDarkMode ? 'bg-white/10 accent-neutral-400' : 'bg-black/10 accent-neutral-600'}`} />
+                  <div className="space-y-6">
+                    {[{ label: 'Zoom', key: 'zoom', min: 1, max: 4, step: 0.01 }, { label: 'X Pos', key: 'x', min: -100, max: 100, step: 1 }, { label: 'Y Pos', key: 'y', min: -100, max: 100, step: 1 }].map(ctrl => (
+                      <div key={ctrl.key} className="space-y-3">
+                        <div className="flex justify-between text-[10px] font-black uppercase opacity-60"><span>{ctrl.label}</span><span>{slots[activeEditIndex].transform[ctrl.key]}</span></div>
+                        <input type="range" min={ctrl.min} max={ctrl.max} step={ctrl.step} value={slots[activeEditIndex].transform[ctrl.key]} onChange={(e) => updateSlot(activeEditIndex, { transform: { ...slots[activeEditIndex].transform, [ctrl.key]: Number(e.target.value) } })} className="w-full h-1.5 appearance-none rounded-full bg-white/10 accent-blue-500" />
+                      </div>
+                    ))}
                   </div>
-                  <div className="space-y-5">
-                    <div className={`flex justify-between text-[10px] font-black uppercase tracking-[0.2em] ${isDarkMode ? 'text-neutral-500' : 'text-neutral-400'}`}><span className="flex items-center gap-2"><MoveHorizontal size={14} /> Position X</span><span className={isDarkMode ? 'text-white' : 'text-black'}>{Math.round(slots[activeEditIndex].transform.x)}%</span></div>
-                    <input type="range" min="-100" max="100" step="1" value={slots[activeEditIndex].transform.x} onChange={(e) => updateSlot(activeEditIndex, { transform: { ...slots[activeEditIndex].transform, x: Number(e.target.value) } })} className={`w-full h-0.5 rounded-full appearance-none cursor-pointer ${isDarkMode ? 'bg-white/10 accent-neutral-400' : 'bg-black/10 accent-neutral-600'}`} />
-                  </div>
-                  <div className="space-y-5">
-                    <div className={`flex justify-between text-[10px] font-black uppercase tracking-[0.2em] ${isDarkMode ? 'text-neutral-500' : 'text-neutral-400'}`}><span className="flex items-center gap-2"><MoveVertical size={14} /> Position Y</span><span className={isDarkMode ? 'text-white' : 'text-black'}>{Math.round(slots[activeEditIndex].transform.y)}%</span></div>
-                    <input type="range" min="-100" max="100" step="1" value={slots[activeEditIndex].transform.y} onChange={(e) => updateSlot(activeEditIndex, { transform: { ...slots[activeEditIndex].transform, y: Number(e.target.value) } })} className={`w-full h-0.5 rounded-full appearance-none cursor-pointer ${isDarkMode ? 'bg-white/10 accent-neutral-400' : 'bg-black/10 accent-neutral-600'}`} />
-                  </div>
-                  <div className="space-y-5 pt-10 border-t transition-colors duration-500" style={{ borderColor: isDarkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)' }}>
-                    <div className={`flex justify-between text-[10px] font-black uppercase tracking-[0.2em] ${isDarkMode ? 'text-neutral-500' : 'text-neutral-400'}`}><span className="flex items-center gap-2"><Speaker size={14} /> Audio Gain</span><span className={isDarkMode ? 'text-white' : 'text-black'}>{Math.round(slots[activeEditIndex].volume * 100)}%</span></div>
-                    <input type="range" min="0" max="2" step="0.05" value={slots[activeEditIndex].volume} onChange={(e) => updateSlot(activeEditIndex, { volume: Number(e.target.value) })} className={`w-full h-0.5 rounded-full appearance-none cursor-pointer ${isDarkMode ? 'bg-white/10 accent-neutral-400' : 'bg-black/10 accent-neutral-600'}`} />
-                  </div>
-                  <div className="pt-10 flex flex-col gap-4">
-                    <button onClick={() => updateSlot(activeEditIndex, { transform: { zoom: 1, x: 0, y: 0, startTime: 0 }, filterId: 'none' })} className={`w-full py-4 rounded-2xl text-[10px] font-black uppercase tracking-[0.3em] transition-all border-2 flex items-center justify-center gap-3 ${isDarkMode ? 'border-white text-white hover:bg-white hover:text-black' : 'border-black text-black hover:bg-black hover:text-white'}`}>
-                      <RotateCcw size={16} /> RESET CLIP
-                    </button>
-                    <button onClick={(e) => removeVideo(activeEditIndex, e)} className={`w-full py-4 rounded-2xl text-[10px] font-black uppercase tracking-[0.3em] transition-all flex items-center justify-center gap-3 ${isDarkMode ? 'text-red-400/30 hover:text-red-500' : 'text-red-500/30 hover:text-red-600'}`}>
-                      <Trash2 size={16} /> REMOVE
-                    </button>
+                  <div className="pt-8 flex flex-col gap-3">
+                    <button onClick={() => updateSlot(activeEditIndex, { transform: { zoom: 1, x: 0, y: 0, startTime: 0 }, filterId: 'none' })} className="w-full py-4 rounded-2xl border-2 border-white/10 hover:border-white text-[10px] font-black uppercase tracking-widest transition-all">Reset Transformation</button>
+                    <button onClick={(e) => removeVideo(activeEditIndex, e)} className="w-full py-4 text-red-500 text-[10px] font-black uppercase tracking-widest hover:bg-red-500/10 rounded-2xl transition-all">Delete Clip</button>
                   </div>
                 </div>
               )}
             </div>
           </div>
         </aside>
-        
+
         {exportStatus.active && (
-          <div className="absolute top-10 left-1/2 -translate-x-1/2 z-[100] animate-in slide-in-from-top-10 duration-700">
-            <div className={`backdrop-blur-3xl border p-5 pr-12 rounded-[2rem] shadow-[0_40px_100px_rgba(0,0,0,0.6)] flex items-center gap-8 min-w-[450px] ${isDarkMode ? 'bg-[#0a0a0a]/90 border-white/10' : 'bg-white/90 border-black/10'}`}>
-              <div className={`relative w-20 h-20 rounded-2xl overflow-hidden flex items-center justify-center shrink-0 border shadow-inner ${isDarkMode ? 'bg-black border-white/5' : 'bg-neutral-100 border-black/5'}`}>
-                {exportStatus.phase === 'encoding' ? (
-                  <canvas ref={exportCanvasRef} className="w-full h-full object-contain" />
-                ) : (
-                  <FileVideo className={`w-8 h-8 animate-pulse ${isDarkMode ? 'text-neutral-600' : 'text-neutral-400'}`} />
-                )}
+          <div className="absolute top-4 sm:top-10 left-1/2 -translate-x-1/2 z-[150] w-[calc(100%-2rem)] sm:w-auto animate-in slide-in-from-top-10">
+            <div className={`backdrop-blur-3xl border p-4 sm:p-5 rounded-[1.5rem] sm:rounded-[2rem] shadow-2xl flex items-center gap-4 sm:gap-8 ${isDarkMode ? 'bg-[#0a0a0a]/90 border-white/10' : 'bg-white/90 border-black/10'}`}>
+              <div className="relative w-12 h-12 sm:w-20 sm:h-20 rounded-xl overflow-hidden flex items-center justify-center bg-black border border-white/5">
+                {exportStatus.phase === 'encoding' ? <canvas ref={exportCanvasRef} className="w-full h-full object-contain" /> : <FileVideo className="w-6 h-6 animate-pulse text-neutral-600" />}
               </div>
-              <div className="flex-1">
-                <div className="flex justify-between items-center mb-4">
-                  <span className={`text-[11px] font-black uppercase tracking-[0.4em] flex items-center gap-3 ${isDarkMode ? 'text-white' : 'text-black'}`}>
-                    <span className={`w-2 h-2 rounded-full bg-blue-500 animate-pulse`} />
-                    {exportStatus.phase === 'decoding' ? 'Buffering Audio Stream' : (exportStatus.phase === 'encoding' ? 'Mastering Layout' : 'Finalizing Master')}
+              <div className="flex-1 min-w-[200px]">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-[10px] font-black uppercase tracking-widest">
+                    {exportStatus.phase === 'decoding' ? 'Syncing Audio' : (exportStatus.phase === 'encoding' ? 'Rendering Master' : 'Finalizing Master')}
                   </span>
-                  <span className="text-[12px] font-black tabular-nums text-neutral-400">{exportStatus.progress}%</span>
+                  <span className="text-[10px] font-bold tabular-nums">{exportStatus.progress}%</span>
                 </div>
-                <div className={`w-full h-1 rounded-full overflow-hidden shadow-inner ${isDarkMode ? 'bg-white/5' : 'bg-black/5'}`}>
-                  <div 
-                    className={`h-full transition-all duration-300 origin-left rounded-full`} 
-                    style={{ transform: `scaleX(${exportStatus.progress / 100})`, backgroundColor: HIGHLIGHT_COLOR }} 
-                  />
+                <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden">
+                  <div className={`h-full bg-blue-500 transition-all duration-300 ${exportStatus.phase === 'finalizing' ? 'animate-pulse' : ''}`} style={{ width: `${exportStatus.progress}%` }} />
                 </div>
               </div>
             </div>
@@ -1068,12 +1016,12 @@ function App() {
         )}
 
         {isPreparing && (
-          <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/95 backdrop-blur-2xl">
+          <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/95 backdrop-blur-3xl">
              <div className="flex flex-col items-center gap-8 text-white text-center">
-                <div className="relative flex items-center justify-center"><Loader2 className="w-20 h-20 animate-spin text-white/5" /><Loader2 className="absolute inset-0 w-20 h-20 animate-pulse text-white/10 blur-md" /><Layout className="absolute w-8 h-8 text-white/40" /></div>
-                <div className="flex flex-col items-center gap-3">
-                  <span className="text-sm font-black uppercase tracking-[0.6em] ml-[0.6em]">MP4 MASTER ENGINE</span>
-                  <span className="text-[10px] text-white/20 uppercase tracking-[0.3em] font-bold">Locking frame buffers for H.264 encode</span>
+                <div className="relative flex items-center justify-center"><Loader2 className="w-20 h-20 animate-spin text-white/5" /><Layout className="absolute w-8 h-8 text-white/40" /></div>
+                <div className="space-y-2">
+                  <span className="text-sm font-black uppercase tracking-[0.5em] block">Starting Stitch Engine</span>
+                  <span className="text-[10px] opacity-30 uppercase tracking-[0.2em] font-bold">Locking frame buffers for MP4 mastering</span>
                 </div>
              </div>
           </div>
@@ -1081,52 +1029,32 @@ function App() {
       </div>
 
       {showExportModal && !exportStatus.active && (
-        <div className="fixed inset-0 bg-black/95 backdrop-blur-sm z-[200] flex items-center justify-center p-6 animate-in fade-in duration-300">
-          <div className={`border rounded-[2.5rem] w-full max-md overflow-hidden shadow-[0_50px_100px_rgba(0,0,0,0.6)] animate-in zoom-in-95 duration-500 ${isDarkMode ? 'bg-[#0a0a0a] border-white/10' : 'bg-white border-black/10'}`}>
-            <div className={`p-10 border-b flex justify-between items-center transition-colors duration-500 ${isDarkMode ? 'bg-[#0d0d0d] border-white/5' : 'bg-neutral-50 border-black/5'}`}>
-              <h2 className={`font-black text-[13px] uppercase tracking-[0.5em] ${isDarkMode ? 'text-white' : 'text-black'}`}>Export Properties</h2>
-              <button onClick={() => setShowExportModal(false)} className={`transition-all p-2 rounded-full active:scale-75 ${isDarkMode ? 'text-neutral-600 hover:text-white bg-white/5' : 'text-neutral-400 hover:text-black bg-black/5'}`}><X size={18} /></button>
+        <div className="fixed inset-0 bg-black/95 backdrop-blur-md z-[300] flex items-center justify-center p-4">
+          <div className={`border rounded-[2.5rem] w-full max-w-md overflow-hidden shadow-2xl animate-in zoom-in-95 duration-300 ${isDarkMode ? 'bg-[#0a0a0a] border-white/10' : 'bg-white border-black/10'}`}>
+            <div className="p-8 border-b flex justify-between items-center bg-[#0d0d0d]/50">
+              <h2 className="font-black text-[13px] uppercase tracking-[0.5em]">Export Resolution</h2>
+              <button onClick={() => setShowExportModal(false)} className="p-2 bg-white/5 rounded-full hover:text-red-500 transition-colors"><X size={18} /></button>
             </div>
-            <div className="p-10 space-y-14">
+            <div className="p-10 space-y-12">
               <div className="space-y-6">
-                <label className="text-[10px] font-black text-neutral-500 uppercase tracking-[0.3em] flex justify-between">
-                  <span>RESOLUTION</span>
-                  <span className="text-blue-500">NATIVE MP4</span>
-                </label>
+                <label className="text-[10px] font-black text-neutral-500 uppercase tracking-widest">Master Quality</label>
                 <div className="grid grid-cols-3 gap-3">
                   {['720p', '1080p', '4k'].map(res => (
-                    <button 
-                      key={res} 
-                      onClick={() => setExportRes(res)} 
-                      className={`py-5 rounded-2xl text-[11px] font-black uppercase tracking-[0.2em] transition-all border active:scale-95 ${exportRes === res ? (isDarkMode ? 'border-white text-white shadow-inner' : 'border-black text-black shadow-inner') : (isDarkMode ? 'border-transparent text-neutral-600 hover:text-neutral-400' : 'border-transparent text-neutral-400 hover:text-black')}`}
-                    >
-                      {res}
-                    </button>
+                    <button key={res} onClick={() => setExportRes(res)} className={`py-4 rounded-2xl text-[11px] font-black uppercase border transition-all ${exportRes === res ? 'border-white text-white bg-white/10' : 'border-white/10 text-neutral-500'}`}>{res}</button>
                   ))}
                 </div>
               </div>
               <div className="space-y-6">
-                <label className="text-[10px] font-black text-neutral-500 uppercase tracking-[0.3em]">FPS</label>
+                <label className="text-[10px] font-black text-neutral-500 uppercase tracking-widest">Motion Rate (FPS)</label>
                 <div className="flex gap-3">
                   {[24, 30, 60].map(fps => (
-                    <button 
-                      key={fps} 
-                      onClick={() => setExportFps(fps)} 
-                      className={`flex-1 py-5 rounded-2xl text-[11px] font-black uppercase tracking-[0.2em] transition-all border active:scale-95 ${exportFps === fps ? (isDarkMode ? 'border-white text-white shadow-inner' : 'border-black text-black shadow-inner') : (isDarkMode ? 'border-transparent text-neutral-600 hover:text-neutral-400' : 'border-transparent text-neutral-400 hover:text-black')}`}
-                    >
-                      {fps}
-                    </button>
+                    <button key={fps} onClick={() => setExportFps(fps)} className={`flex-1 py-4 rounded-2xl text-[11px] font-black uppercase border transition-all ${exportFps === fps ? 'border-white text-white bg-white/10' : 'border-white/10 text-neutral-500'}`}>{fps}</button>
                   ))}
                 </div>
               </div>
             </div>
-            <div className={`p-6 border-t transition-colors duration-500 ${isDarkMode ? 'bg-[#0d0d0d] border-white/5' : 'bg-neutral-50 border-black/5'}`}>
-              <button 
-                onClick={handleStartExportBtn} 
-                className={`w-full py-7 px-4 rounded-[1.5rem] flex items-center justify-center gap-3 transition-all active:scale-[0.96] shadow-2xl text-[13px] font-black uppercase tracking-[0.6em] border-2 ${isDarkMode ? 'border-white bg-white text-black hover:bg-neutral-200 shadow-white/5' : 'border-black bg-black text-white hover:bg-neutral-800 shadow-black/5'}`}
-              >
-                MASTER MP4
-              </button>
+            <div className="p-6 border-t bg-[#0d0d0d]/50">
+              <button onClick={handleStartExportBtn} className="w-full py-6 rounded-[1.5rem] bg-white text-black text-[13px] font-black uppercase tracking-[0.6em] hover:scale-[1.02] active:scale-95 transition-all shadow-xl">Master Video</button>
             </div>
           </div>
         </div>
