@@ -151,11 +151,17 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
   let canvas;
   let ctx;
 
+  const CODEC_FALLBACKS = [
+    'avc1.640034', // High
+    'avc1.4D401F', // Main
+    'avc1.42E01E', // Baseline
+  ];
+
   self.onmessage = async (e) => {
     const { type, data } = e.data;
 
     if (type === 'INIT') {
-      const { width, height, fps, bitrate, sampleRate, numberOfChannels, offscreenCanvas, codec } = data;
+      const { width, height, fps, bitrate, sampleRate, numberOfChannels, offscreenCanvas } = data;
       
       canvas = offscreenCanvas;
       ctx = canvas.getContext('2d', { alpha: false, colorSpace: 'srgb', desynchronized: true });
@@ -171,20 +177,37 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
 
       videoEncoder = new VideoEncoder({
         output: (chunk, metadata) => muxer.addVideoChunk(chunk, metadata),
-        error: (e) => self.postMessage({ type: 'ERROR', data: 'VideoEncoder Error: ' + e.message })
+        error: (e) => self.postMessage({ type: 'ERROR', data: 'Encoder: ' + e.message })
       });
 
-      videoEncoder.configure({
-        codec: codec || 'avc1.640034',
-        width, height,
-        bitrate,
-        framerate: fps,
-        hardwareAcceleration: 'prefer-hardware'
-      });
+      // Triple-fallback codec negotiation
+      let success = false;
+      let lastErr = '';
+      for (const codec of CODEC_FALLBACKS) {
+        try {
+          videoEncoder.configure({
+            codec: codec,
+            width, height,
+            bitrate,
+            framerate: fps,
+            hardwareAcceleration: 'prefer-hardware',
+            latencyMode: 'quality'
+          });
+          success = true;
+          break;
+        } catch (err) {
+          lastErr = err.message;
+        }
+      }
+
+      if (!success) {
+        self.postMessage({ type: 'ERROR', data: 'No compatible codec found. Error: ' + lastErr });
+        return;
+      }
 
       audioEncoder = new AudioEncoder({
         output: (chunk, metadata) => muxer.addAudioChunk(chunk, metadata),
-        error: (e) => self.postMessage({ type: 'ERROR', data: 'AudioEncoder Error: ' + e.message })
+        error: (e) => self.postMessage({ type: 'ERROR', data: 'Audio: ' + e.message })
       });
 
       audioEncoder.configure({
@@ -256,7 +279,7 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
 
         self.postMessage({ type: 'ACK' });
       } catch (err) {
-        self.postMessage({ type: 'ERROR', data: 'Encoding loop error: ' + err.message });
+        self.postMessage({ type: 'ERROR', data: 'Frame Error: ' + err.message });
       }
     }
 
@@ -268,7 +291,7 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
         const { buffer } = muxer.target;
         self.postMessage({ type: 'FINISHED', data: buffer }, [buffer]);
       } catch (err) {
-        self.postMessage({ type: 'ERROR', data: 'Finalization Error: ' + err.message });
+        self.postMessage({ type: 'ERROR', data: 'Finalize: ' + err.message });
       }
     }
   };
@@ -292,7 +315,7 @@ export default function App() {
   const [exportFps, setExportFps] = useState(30);
   const [inspectorCurrentTime, setInspectorCurrentTime] = useState(0);
   
-  const [exportStatus, setExportStatus] = useState({ active: false, phase: '', progress: 0 });
+  const [exportStatus, setExportStatus] = useState({ active: false, phase: '', progress: 0, errorMsg: '' });
   const [muxerLoaded, setMuxerLoaded] = useState(false);
 
   const [isPreparing, setIsPreparing] = useState(false);
@@ -665,6 +688,11 @@ export default function App() {
     if (Object.keys(slots).length === 0 || !muxerLoaded) return;
     setIsPreparing(true); setShowExportModal(false);
     
+    // RELEASE HARDWARE: Briefly nullify UI video sources to free up phone VPU
+    Object.values(videoRefs.current).forEach(v => { 
+      if (v) { v.pause(); v.removeAttribute('src'); v.load(); } 
+    });
+
     let maxTotalDuration = 0;
     Object.entries(slots).forEach(([id, data]) => {
         const d = data.duration; 
@@ -678,25 +706,28 @@ export default function App() {
     // Clip duration on mobile to prevent extreme memory pressure
     const targetDuration = Math.min(maxTotalDuration > 0 ? maxTotalDuration : 5, isMobile ? 30 : 120); 
 
-    Object.values(videoRefs.current).forEach(v => { if (v) v.pause(); });
-    setExportStatus({ active: true, phase: 'decoding', progress: 0 });
+    setExportStatus({ active: true, phase: 'decoding', progress: 0, errorMsg: '' });
     
     try {
       await clearStoreIDB('audioChunks');
       await decodeAndPersistAudio();
       setIsPreparing(false); 
-      setExportStatus({ active: true, phase: 'encoding', progress: 0 });
+      setExportStatus({ active: true, phase: 'encoding', progress: 0, errorMsg: '' });
       await performMp4Export({ 
         res: exportRes, 
         fps: exportFps, 
         duration: targetDuration
       });
-      setExportStatus({ active: false, phase: '', progress: 0 });
+      setExportStatus({ active: false, phase: '', progress: 0, errorMsg: '' });
     } catch (err) {
       console.error("Export failed:", err);
-      setExportStatus({ active: false, phase: '', progress: 0 });
+      setExportStatus({ active: true, phase: 'error', progress: 0, errorMsg: err.message });
       setIsPreparing(false);
-      setActiveQuickTool('error_alert');
+    } finally {
+      // REATTACH HARDWARE: Restore UI video sources
+      Object.entries(slots).forEach(([id, data]) => {
+        if (videoRefs.current[id]) videoRefs.current[id].src = data.url;
+      });
     }
   };
 
@@ -706,7 +737,7 @@ export default function App() {
 
     for (let i = 0; i < slotsToDecode.length; i++) {
       const [slotId, data] = slotsToDecode[i];
-      setExportStatus({ active: true, phase: 'decoding', progress: Math.round(((i + 0.1) / slotsToDecode.length) * 100) });
+      setExportStatus(prev => ({ ...prev, progress: Math.round(((i + 0.1) / slotsToDecode.length) * 100) }));
       try {
         const response = await fetch(data.url);
         const arrayBuffer = await response.arrayBuffer();
@@ -749,11 +780,8 @@ export default function App() {
     width = Math.floor(width / 2) * 2;
     height = Math.floor(height / 2) * 2;
 
-    // Use Baseline Profile for mobile stability - High Profile often crashes iOS hardware encoders
-    const codec = isMobile ? 'avc1.42E01E' : 'avc1.640034';
-    
-    const bitrateMultiplier = isMobile ? 0.25 : 1; 
-    const bitrate = Math.floor((config.res === '4k' ? 25_000_000 : (config.res === '1080p' ? 8_000_000 : (config.res === '720p' ? 3_000_000 : 1_500_000))) * bitrateMultiplier);
+    const bitrateMultiplier = isMobile ? 0.2 : 1; 
+    const bitrate = Math.floor((config.res === '4k' ? 25_000_000 : (config.res === '1080p' ? 8_000_000 : (config.res === '720p' ? 2_000_000 : 1_000_000))) * bitrateMultiplier);
     const SAMPLE_RATE = 44100;
     const CHANNELS = 2;
 
@@ -786,7 +814,7 @@ export default function App() {
       data: { 
         width, height, fps: config.fps, bitrate, 
         sampleRate: SAMPLE_RATE, numberOfChannels: CHANNELS,
-        offscreenCanvas, codec
+        offscreenCanvas
       }
     }, [offscreenCanvas]);
 
@@ -801,7 +829,7 @@ export default function App() {
       const onSeeked = () => { video.removeEventListener('seeked', onSeeked); resolve(); };
       video.addEventListener('seeked', onSeeked);
       video.currentTime = Math.max(0, Math.min(time, video.duration - 0.05));
-      setTimeout(resolve, isMobile ? 400 : 80);
+      setTimeout(resolve, isMobile ? 500 : 80); // Very conservative seek time for mobile
     });
 
     let totalSamplesProcessed = 0;
@@ -811,9 +839,11 @@ export default function App() {
       const virtualTime = i * frameInterval;
       setExportStatus(prev => ({ ...prev, progress: Math.round((i / totalFrames) * 100) }));
 
+      // Sequential seeking from main thread into the temporary "capture" elements
       for (const [id, slot] of Object.entries(slots)) {
         const video = videoRefs.current[id];
-        if (!video || !video.src) continue;
+        // Temporarily reconnecting for seeking logic
+        if (!video.src) video.src = slot.url;
         const delay = syncData.active ? (syncData.offsets[id] || 0) : 0;
         const baseStart = syncData.active ? 0 : (slot.transform.startTime || 0);
         const targetTime = baseStart + (virtualTime - delay);
@@ -904,7 +934,7 @@ export default function App() {
       totalSamplesProcessed += samplesNeeded;
       
       // Increased throttle for mobile to allow system garbage collection
-      if (i % (isMobile ? 1 : 2) === 0) await new Promise(r => setTimeout(r, isMobile ? 30 : 1));
+      if (i % (isMobile ? 1 : 2) === 0) await new Promise(r => setTimeout(r, isMobile ? 50 : 1));
     }
 
     setExportStatus(prev => ({ ...prev, phase: 'finalizing', progress: 100 }));
@@ -1284,19 +1314,28 @@ export default function App() {
           <div className="absolute top-4 sm:top-10 left-1/2 -translate-x-1/2 z-[200] w-[calc(100%-2rem)] sm:w-auto animate-in slide-in-from-top-10 px-4">
             <div className={`backdrop-blur-3xl border p-4 sm:p-6 rounded-[2rem] shadow-2xl flex items-center gap-4 sm:gap-10 ${isDarkMode ? 'bg-[#0a0a0a]/90 border-white/10' : 'bg-white/90 border-black/10'}`}>
               <div className="relative w-12 h-12 sm:w-20 sm:h-20 rounded-xl overflow-hidden flex items-center justify-center bg-black border border-white/5">
-                 <FileVideo className="w-6 h-6 animate-pulse text-blue-500" />
+                 {exportStatus.phase === 'error' ? <AlertTriangle className="w-6 h-6 text-red-500" /> : <FileVideo className="w-6 h-6 animate-pulse text-blue-500" />}
               </div>
               <div className="flex-1 min-w-[140px] sm:min-w-[200px]">
                 <div className="flex justify-between items-center mb-2 sm:mb-3">
-                  <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-blue-400">
-                    {exportStatus.phase === 'decoding' ? 'Syncing' : (exportStatus.phase === 'encoding' ? 'Rendering' : 'Packaging File')}
+                  <span className={`text-[8px] sm:text-[10px] font-black uppercase tracking-widest ${exportStatus.phase === 'error' ? 'text-red-500' : 'text-blue-400'}`}>
+                    {exportStatus.phase === 'decoding' ? 'Syncing' : (exportStatus.phase === 'encoding' ? 'Rendering' : (exportStatus.phase === 'error' ? 'Failed' : 'Packaging'))}
                   </span>
-                  <span className="text-[9px] sm:text-[11px] font-black tabular-nums">{exportStatus.progress}%</span>
+                  {exportStatus.phase !== 'error' && <span className="text-[9px] sm:text-[11px] font-black tabular-nums">{exportStatus.progress}%</span>}
                 </div>
-                <div className="w-full h-1 sm:h-2 bg-white/5 rounded-full overflow-hidden">
-                  <div className={`h-full bg-blue-500 transition-all duration-700 shadow-[0_0_15px_rgba(59,130,246,0.5)]`} style={{ width: `${exportStatus.progress}%` }} />
-                </div>
+                {exportStatus.phase === 'error' ? (
+                  <div className="text-[10px] opacity-60 font-medium line-clamp-1">{exportStatus.errorMsg}</div>
+                ) : (
+                  <div className="w-full h-1 sm:h-2 bg-white/5 rounded-full overflow-hidden">
+                    <div className={`h-full bg-blue-500 transition-all duration-700 shadow-[0_0_15px_rgba(59,130,246,0.5)]`} style={{ width: `${exportStatus.progress}%` }} />
+                  </div>
+                )}
               </div>
+              {exportStatus.phase === 'error' && (
+                <button onClick={() => setExportStatus({ active: false, phase: '', progress: 0, errorMsg: '' })} className="p-2 bg-white/5 rounded-full hover:bg-white/10 transition-colors">
+                  <X size={14} />
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -1314,22 +1353,6 @@ export default function App() {
           </div>
         )}
       </div>
-
-      {/* ERROR ALERT MODAL */}
-      {activeQuickTool === 'error_alert' && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-xl z-[500] flex items-center justify-center p-6" onClick={() => setActiveQuickTool(null)}>
-          <div className={`max-w-md w-full p-8 rounded-[2rem] border transition-all animate-in zoom-in-95 ${isDarkMode ? 'bg-[#1a1a1a] border-white/10' : 'bg-white border-black/10'}`}>
-            <div className="flex flex-col items-center text-center gap-6">
-              <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center text-red-500">
-                <AlertTriangle size={32} />
-              </div>
-              <h3 className="text-xl font-bold">Export Failed</h3>
-              <p className="text-sm opacity-60 leading-relaxed">The browser hardware encoder crashed or ran out of memory. Try the <strong>480p (Safe Mode)</strong> option or a shorter duration.</p>
-              <button onClick={() => setActiveQuickTool(null)} className={PrimaryButtonStyle()}>DISMISS</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* EXPORT MASTER MODAL */}
       {showExportModal && !exportStatus.active && (
@@ -1352,7 +1375,7 @@ export default function App() {
                   {isMobile && (
                     <div className="flex items-center gap-1 text-emerald-500">
                       <ShieldCheck size={10} />
-                      <span className="text-[8px] font-black uppercase">Compatibility Mode Active</span>
+                      <span className="text-[8px] font-black uppercase">VPU Auto-Claim Active</span>
                     </div>
                   )}
                 </div>
