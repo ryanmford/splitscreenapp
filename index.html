@@ -1,4 +1,31 @@
-import React, { useState, useRef, useEffect, memo, useMemo } from 'react';
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>App Test</title>
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "lucide-react": "https://esm.sh/lucide-react@0.292.0?bundle"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-type="module">
+    import { createRoot } from 'react-dom/client';
+    
+    import React, { useState, useRef, useEffect, memo, useMemo } from 'react';
 import { 
   Layout, Play, Pause, ArrowLeft, Plus, Trash2, VolumeX, Volume2, 
   Download, X, Video, Clock, Pencil,
