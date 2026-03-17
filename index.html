@@ -143,94 +143,77 @@ const QuickToolOverlay = ({ title, icon: Icon, value, min, max, step = 1, onChan
 };
 
 const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
-  importScripts('https://unpkg.com/mp4-muxer');
+  importScripts('https://unpkg.com/mp4-muxer@3.3.0/build/mp4-muxer.js');
 
-  let muxer;
-  let videoEncoder;
-  let audioEncoder;
-  let canvas;
-  let ctx;
+  let muxer = null;
+  let videoEncoder = null;
+  let audioEncoder = null;
+  let canvas = null;
+  let ctx = null;
 
   const CODEC_FALLBACKS = [
-    'avc1.640034', // High
     'avc1.4D401F', // Main
     'avc1.42E01E', // Baseline
+    'avc1.640034', // High
   ];
 
   self.onmessage = async (e) => {
     const { type, data } = e.data;
 
     if (type === 'INIT') {
-      const { width, height, fps, bitrate, sampleRate, numberOfChannels, offscreenCanvas } = data;
-      
-      canvas = offscreenCanvas;
-      ctx = canvas.getContext('2d', { alpha: false, colorSpace: 'srgb', desynchronized: true });
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
+      try {
+        const { width, height, fps, bitrate, sampleRate, numberOfChannels, offscreenCanvas } = data;
+        
+        canvas = offscreenCanvas;
+        ctx = canvas.getContext('2d', { alpha: false, colorSpace: 'srgb', desynchronized: true });
+        ctx.imageSmoothingEnabled = true;
 
-      muxer = new Mp4Muxer.Muxer({
-        target: new Mp4Muxer.ArrayBufferTarget(),
-        video: { codec: 'avc', width, height },
-        audio: { codec: 'aac', sampleRate, numberOfChannels },
-        fastStart: 'in-memory'
-      });
+        muxer = new Mp4Muxer.Muxer({
+          target: new Mp4Muxer.ArrayBufferTarget(),
+          video: { codec: 'avc', width, height },
+          audio: { codec: 'aac', sampleRate, numberOfChannels },
+          fastStart: 'in-memory'
+        });
 
-      videoEncoder = new VideoEncoder({
-        output: (chunk, metadata) => muxer.addVideoChunk(chunk, metadata),
-        error: (e) => self.postMessage({ type: 'ERROR', data: 'Encoder: ' + e.message })
-      });
+        videoEncoder = new VideoEncoder({
+          output: (chunk, metadata) => { if(muxer) muxer.addVideoChunk(chunk, metadata); },
+          error: (e) => self.postMessage({ type: 'ERROR', data: 'V-Encoder: ' + e.message })
+        });
 
-      // Triple-fallback codec negotiation
-      let success = false;
-      let lastErr = '';
-      for (const codec of CODEC_FALLBACKS) {
-        try {
-          videoEncoder.configure({
-            codec: codec,
-            width, height,
-            bitrate,
-            framerate: fps,
-            hardwareAcceleration: 'prefer-hardware',
-            latencyMode: 'quality'
-          });
-          success = true;
-          break;
-        } catch (err) {
-          lastErr = err.message;
+        // Negotiate Codec
+        let success = false;
+        for (const codec of CODEC_FALLBACKS) {
+          try {
+            videoEncoder.configure({
+              codec, width, height, bitrate,
+              framerate: fps,
+              hardwareAcceleration: 'prefer-hardware'
+            });
+            success = true;
+            break;
+          } catch(e) {}
         }
+
+        if (!success) throw new Error("Hardware encoder rejected all configurations.");
+
+        audioEncoder = new AudioEncoder({
+          output: (chunk, metadata) => { if(muxer) muxer.addAudioChunk(chunk, metadata); },
+          error: (e) => self.postMessage({ type: 'ERROR', data: 'A-Encoder: ' + e.message })
+        });
+
+        audioEncoder.configure({
+          codec: 'mp4a.40.2',
+          numberOfChannels, sampleRate, bitrate: 128000
+        });
+
+        self.postMessage({ type: 'READY' });
+      } catch (err) {
+        self.postMessage({ type: 'ERROR', data: 'Init: ' + err.message });
       }
-
-      if (!success) {
-        self.postMessage({ type: 'ERROR', data: 'No compatible codec found. Error: ' + lastErr });
-        return;
-      }
-
-      audioEncoder = new AudioEncoder({
-        output: (chunk, metadata) => muxer.addAudioChunk(chunk, metadata),
-        error: (e) => self.postMessage({ type: 'ERROR', data: 'Audio: ' + e.message })
-      });
-
-      audioEncoder.configure({
-        codec: 'mp4a.40.2',
-        numberOfChannels,
-        sampleRate,
-        bitrate: 128000
-      });
-
-      self.postMessage({ type: 'READY' });
     }
 
     if (type === 'ENCODE_FRAME') {
-      const { 
-        timestamp, 
-        sourceFrames, 
-        audioData, 
-        keyFrame,
-        layoutConfig,
-        bgColor,
-        spacing,
-        radius
-      } = data;
+      const { timestamp, sourceFrames, audioData, keyFrame, layoutConfig, bgColor, spacing, radius } = data;
 
       try {
         ctx.fillStyle = bgColor;
@@ -251,22 +234,20 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
           else ctx.rect(cellX, cellY, cellW, cellH);
           ctx.clip();
 
-          const vw = frame.displayWidth;
-          const vh = frame.displayHeight;
           const transform = item.transform;
-          const baseScale = Math.max(cellW / vw, cellH / vh);
-          const drawW = vw * baseScale * transform.zoom;
-          const drawH = vh * baseScale * transform.zoom;
+          const baseScale = Math.max(cellW / frame.displayWidth, cellH / frame.displayHeight);
+          const drawW = frame.displayWidth * baseScale * transform.zoom;
+          const drawH = frame.displayHeight * baseScale * transform.zoom;
           const drawX = cellX + ((cellW - drawW) * ((50 - transform.x) / 100));
           const drawY = cellY + ((cellH - drawH) * ((50 + transform.y) / 100));
 
           if (item.filter !== 'none') ctx.filter = item.filter;
-          else ctx.filter = 'none';
-          
           ctx.drawImage(frame, drawX, drawY, drawW, drawH);
           ctx.restore();
-          frame.close(); 
         });
+
+        // CLEANUP: Close all passed frames regardless of use
+        Object.values(sourceFrames).forEach(f => { if(f) f.close(); });
 
         const compositeFrame = new VideoFrame(canvas, { timestamp });
         videoEncoder.encode(compositeFrame, { keyFrame });
@@ -279,17 +260,28 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
 
         self.postMessage({ type: 'ACK' });
       } catch (err) {
-        self.postMessage({ type: 'ERROR', data: 'Frame Error: ' + err.message });
+        // Ensure cleanup on error
+        Object.values(sourceFrames).forEach(f => { if(f) f.close(); });
+        if(audioData) audioData.close();
+        self.postMessage({ type: 'ERROR', data: 'Render Loop: ' + err.message });
       }
     }
 
     if (type === 'FINALIZE') {
       try {
+        if (!muxer || !videoEncoder || !audioEncoder) throw new Error("Engine was purged by system.");
+        
         await videoEncoder.flush();
         await audioEncoder.flush();
         muxer.finalize();
-        const { buffer } = muxer.target;
+        
+        const buffer = muxer.target.buffer;
+        if (!buffer) throw new Error("Muxer failed to generate buffer.");
+        
         self.postMessage({ type: 'FINISHED', data: buffer }, [buffer]);
+        
+        // Reset state
+        muxer = null; videoEncoder = null; audioEncoder = null;
       } catch (err) {
         self.postMessage({ type: 'ERROR', data: 'Finalize: ' + err.message });
       }
@@ -388,7 +380,7 @@ export default function App() {
 
   useEffect(() => {
     const script = document.createElement('script');
-    script.src = 'https://unpkg.com/mp4-muxer';
+    script.src = 'https://unpkg.com/mp4-muxer@3.3.0/build/mp4-muxer.js';
     script.onload = () => setMuxerLoaded(true);
     document.head.appendChild(script);
   }, []);
@@ -680,8 +672,7 @@ export default function App() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    // Increased timeout for mobile to ensure the download actually starts
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
   };
 
   const handleStartExportBtn = async () => {
@@ -689,7 +680,7 @@ export default function App() {
     setIsPreparing(true); setShowExportModal(false);
     
     // RELEASE HARDWARE: Briefly nullify UI video sources to free up phone VPU
-    Object.values(videoRefs.current).forEach(v => { 
+    Object.entries(videoRefs.current).forEach(([id, v]) => { 
       if (v) { v.pause(); v.removeAttribute('src'); v.load(); } 
     });
 
@@ -703,7 +694,7 @@ export default function App() {
           if (totalLen > maxTotalDuration) maxTotalDuration = totalLen; 
         }
     });
-    // Clip duration on mobile to prevent extreme memory pressure
+    // Strict mobile duration cap to prevent RAM saturation
     const targetDuration = Math.min(maxTotalDuration > 0 ? maxTotalDuration : 5, isMobile ? 30 : 120); 
 
     setExportStatus({ active: true, phase: 'decoding', progress: 0, errorMsg: '' });
@@ -726,7 +717,10 @@ export default function App() {
     } finally {
       // REATTACH HARDWARE: Restore UI video sources
       Object.entries(slots).forEach(([id, data]) => {
-        if (videoRefs.current[id]) videoRefs.current[id].src = data.url;
+        if (videoRefs.current[id]) {
+          videoRefs.current[id].src = data.url;
+          videoRefs.current[id].load();
+        }
       });
     }
   };
@@ -780,8 +774,8 @@ export default function App() {
     width = Math.floor(width / 2) * 2;
     height = Math.floor(height / 2) * 2;
 
-    const bitrateMultiplier = isMobile ? 0.2 : 1; 
-    const bitrate = Math.floor((config.res === '4k' ? 25_000_000 : (config.res === '1080p' ? 8_000_000 : (config.res === '720p' ? 2_000_000 : 1_000_000))) * bitrateMultiplier);
+    const bitrateMultiplier = isMobile ? 0.15 : 1; 
+    const bitrate = Math.floor((config.res === '4k' ? 20_000_000 : (config.res === '1080p' ? 6_000_000 : (config.res === '720p' ? 1_500_000 : 800_000))) * bitrateMultiplier);
     const SAMPLE_RATE = 44100;
     const CHANNELS = 2;
 
@@ -811,11 +805,7 @@ export default function App() {
 
     worker.postMessage({
       type: 'INIT',
-      data: { 
-        width, height, fps: config.fps, bitrate, 
-        sampleRate: SAMPLE_RATE, numberOfChannels: CHANNELS,
-        offscreenCanvas
-      }
+      data: { width, height, fps: config.fps, bitrate, sampleRate: SAMPLE_RATE, numberOfChannels: CHANNELS, offscreenCanvas }
     }, [offscreenCanvas]);
 
     const totalFrames = Math.ceil(config.duration * config.fps);
@@ -829,7 +819,7 @@ export default function App() {
       const onSeeked = () => { video.removeEventListener('seeked', onSeeked); resolve(); };
       video.addEventListener('seeked', onSeeked);
       video.currentTime = Math.max(0, Math.min(time, video.duration - 0.05));
-      setTimeout(resolve, isMobile ? 500 : 80); // Very conservative seek time for mobile
+      setTimeout(resolve, isMobile ? 600 : 80);
     });
 
     let totalSamplesProcessed = 0;
@@ -839,18 +829,13 @@ export default function App() {
       const virtualTime = i * frameInterval;
       setExportStatus(prev => ({ ...prev, progress: Math.round((i / totalFrames) * 100) }));
 
-      // Sequential seeking from main thread into the temporary "capture" elements
       for (const [id, slot] of Object.entries(slots)) {
         const video = videoRefs.current[id];
-        // Temporarily reconnecting for seeking logic
         if (!video.src) video.src = slot.url;
         const delay = syncData.active ? (syncData.offsets[id] || 0) : 0;
         const baseStart = syncData.active ? 0 : (slot.transform.startTime || 0);
         const targetTime = baseStart + (virtualTime - delay);
-        
-        if (Math.abs(video.currentTime - targetTime) > 0.01) {
-          await seekVideo(video, targetTime);
-        }
+        if (Math.abs(video.currentTime - targetTime) > 0.01) await seekVideo(video, targetTime);
       }
 
       const sourceFrames = {};
@@ -873,9 +858,7 @@ export default function App() {
         const slotData = slots[idx];
         if (!slotData) return null;
         return {
-          slotId: idx,
-          x: item.x, y: item.y, w: item.w, h: item.h,
-          transform: slotData.transform,
+          slotId: idx, x: item.x, y: item.y, w: item.w, h: item.h, transform: slotData.transform,
           filter: (slotData.filterId && slotData.filterId !== 'none' ? FILTERS.find(f => f.id === slotData.filterId)?.css : 'none')
         };
       }).filter(Boolean);
@@ -893,31 +876,29 @@ export default function App() {
         if (slotData.muted) continue;
         const delay = syncData.active ? (syncData.offsets[slotId] || 0) : 0;
         const baseStart = syncData.active ? 0 : (slotData.transform.startTime || 0);
-        const absoluteVideoTime = baseStart + (totalSamplesProcessed / SAMPLE_RATE) - delay;
-        if (absoluteVideoTime < 0) continue; 
+        const absTime = baseStart + (totalSamplesProcessed / SAMPLE_RATE) - delay;
+        if (absTime < 0) continue; 
 
-        const chunkIndex = Math.floor(absoluteVideoTime);
-        const chunkOffset = Math.floor((absoluteVideoTime - chunkIndex) * SAMPLE_RATE);
-        const cacheKey = `slot_${slotId}_chunk_${chunkIndex}`;
+        const cIdx = Math.floor(absTime);
+        const cOff = Math.floor((absTime - cIdx) * SAMPLE_RATE);
+        const cacheKey = `slot_${slotId}_chunk_${cIdx}`;
         const pcmChunk = await new Promise(res => store.get(cacheKey).onsuccess = e => res(e.target.result));
         
         if (pcmChunk) {
-          const chunkActualLength = pcmChunk.length / 2;
+          const cLen = pcmChunk.length / 2;
           for (let s = 0; s < samplesNeeded; s++) {
-            const idx = chunkOffset + s;
-            if (idx < chunkActualLength) {
+            const idx = cOff + s;
+            if (idx < cLen) {
               leftPlane[s] += pcmChunk[idx] * slotData.volume;
-              rightPlane[s] += pcmChunk[idx + chunkActualLength] * slotData.volume;
+              rightPlane[s] += pcmChunk[idx + cLen] * slotData.volume;
             }
           }
         }
       }
 
       const audioData = new AudioData({
-        format: 'f32-planar', sampleRate: SAMPLE_RATE,
-        numberOfFrames: samplesNeeded, numberOfChannels: CHANNELS,
-        timestamp: Math.round((totalSamplesProcessed / SAMPLE_RATE) * 1_000_000),
-        data: mixedBuffer
+        format: 'f32-planar', sampleRate: SAMPLE_RATE, numberOfFrames: samplesNeeded, numberOfChannels: CHANNELS,
+        timestamp: Math.round((totalSamplesProcessed / SAMPLE_RATE) * 1_000_000), data: mixedBuffer
       });
 
       const ackPromise = new Promise(res => { resolveAck = res; });
@@ -932,9 +913,7 @@ export default function App() {
       
       await ackPromise;
       totalSamplesProcessed += samplesNeeded;
-      
-      // Increased throttle for mobile to allow system garbage collection
-      if (i % (isMobile ? 1 : 2) === 0) await new Promise(r => setTimeout(r, isMobile ? 50 : 1));
+      if (i % (isMobile ? 1 : 2) === 0) await new Promise(r => setTimeout(r, isMobile ? 60 : 1));
     }
 
     setExportStatus(prev => ({ ...prev, phase: 'finalizing', progress: 100 }));
