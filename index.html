@@ -171,7 +171,7 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
 
       videoEncoder = new VideoEncoder({
         output: (chunk, metadata) => muxer.addVideoChunk(chunk, metadata),
-        error: (e) => self.postMessage({ type: 'ERROR', data: e.message })
+        error: (e) => self.postMessage({ type: 'ERROR', data: 'VideoEncoder Error: ' + e.message })
       });
 
       videoEncoder.configure({
@@ -184,7 +184,7 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
 
       audioEncoder = new AudioEncoder({
         output: (chunk, metadata) => muxer.addAudioChunk(chunk, metadata),
-        error: (e) => self.postMessage({ type: 'ERROR', data: e.message })
+        error: (e) => self.postMessage({ type: 'ERROR', data: 'AudioEncoder Error: ' + e.message })
       });
 
       audioEncoder.configure({
@@ -210,8 +210,6 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
       } = data;
 
       try {
-        // Explicitly clear to prevent memory accumulation in some browsers
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.fillStyle = bgColor;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -261,11 +259,15 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
     }
 
     if (type === 'FINALIZE') {
-      await videoEncoder.flush();
-      await audioEncoder.flush();
-      muxer.finalize();
-      const { buffer } = muxer.target;
-      self.postMessage({ type: 'FINISHED', data: buffer }, [buffer]);
+      try {
+        await videoEncoder.flush();
+        await audioEncoder.flush();
+        muxer.finalize();
+        const { buffer } = muxer.target;
+        self.postMessage({ type: 'FINISHED', data: buffer }, [buffer]);
+      } catch (err) {
+        self.postMessage({ type: 'ERROR', data: 'Finalization Error: ' + err.message });
+      }
     }
   };
 `], { type: 'application/javascript' }));
@@ -649,11 +651,12 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `stitchpro_render_${config.res}_${Date.now()}.mp4`;
+    a.download = `stitchpro_${config.res}_${Date.now()}.mp4`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    // Increased timeout for mobile to ensure the download actually starts
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
   };
 
   const handleStartExportBtn = async () => {
@@ -670,7 +673,8 @@ export default function App() {
           if (totalLen > maxTotalDuration) maxTotalDuration = totalLen; 
         }
     });
-    const targetDuration = Math.min(maxTotalDuration > 0 ? maxTotalDuration : 5, 120); 
+    // Clip duration on mobile to prevent extreme memory pressure
+    const targetDuration = Math.min(maxTotalDuration > 0 ? maxTotalDuration : 5, isMobile ? 30 : 120); 
 
     Object.values(videoRefs.current).forEach(v => { if (v) v.pause(); });
     setExportStatus({ active: true, phase: 'decoding', progress: 0 });
@@ -690,6 +694,8 @@ export default function App() {
       console.error("Export failed:", err);
       setExportStatus({ active: false, phase: '', progress: 0 });
       setIsPreparing(false);
+      // Use custom UI instead of alert()
+      setActiveQuickTool('error_alert');
     }
   };
 
@@ -741,8 +747,9 @@ export default function App() {
     width = Math.floor(width / 2) * 2;
     height = Math.floor(height / 2) * 2;
 
-    const bitrateMultiplier = isMobile ? 0.6 : 1;
-    const bitrate = Math.floor((config.res === '4k' ? 40_000_000 : (config.res === '1080p' ? 12_000_000 : 6_000_000)) * bitrateMultiplier);
+    // Mobile specific bitrate scaling to prevent OOM
+    const bitrateMultiplier = isMobile ? 0.3 : 1; 
+    const bitrate = Math.floor((config.res === '4k' ? 25_000_000 : (config.res === '1080p' ? 8_000_000 : 3_000_000)) * bitrateMultiplier);
     const SAMPLE_RATE = 44100;
     const CHANNELS = 2;
 
@@ -752,6 +759,9 @@ export default function App() {
 
     const worker = new Worker(EXPORT_WORKER_BLOB);
     let resolveAck;
+    let resolveExport, rejectExport;
+    const finishExport = new Promise((res, rej) => { resolveExport = res; rejectExport = rej; });
+
     worker.onmessage = (e) => {
       const { type, data } = e.data;
       if (type === 'ACK' && resolveAck) resolveAck();
@@ -766,9 +776,6 @@ export default function App() {
         rejectExport(new Error(data));
       }
     };
-
-    let resolveExport, rejectExport;
-    const finishExport = new Promise((res, rej) => { resolveExport = res; rejectExport = rej; });
 
     worker.postMessage({
       type: 'INIT',
@@ -789,9 +796,10 @@ export default function App() {
       if (!video) return resolve();
       const onSeeked = () => { video.removeEventListener('seeked', onSeeked); resolve(); };
       video.addEventListener('seeked', onSeeked);
+      // Small epsilon to prevent black frames on certain hardware decoders
       video.currentTime = Math.max(0, Math.min(time, video.duration - 0.05));
-      // Staggered delay for mobile hardware stability
-      setTimeout(resolve, isMobile ? 300 : 100);
+      // Buffer for mobile hardware to stabilize
+      setTimeout(resolve, isMobile ? 350 : 80);
     });
 
     let totalSamplesProcessed = 0;
@@ -807,7 +815,12 @@ export default function App() {
         if (!video || !video.src) continue;
         const delay = syncData.active ? (syncData.offsets[id] || 0) : 0;
         const baseStart = syncData.active ? 0 : (slot.transform.startTime || 0);
-        await seekVideo(video, baseStart + (virtualTime - delay));
+        const targetTime = baseStart + (virtualTime - delay);
+        
+        // Only seek if the time has actually changed significantly to save battery/RAM
+        if (Math.abs(video.currentTime - targetTime) > 0.01) {
+          await seekVideo(video, targetTime);
+        }
       }
 
       const sourceFrames = {};
@@ -890,8 +903,8 @@ export default function App() {
       await ackPromise;
       totalSamplesProcessed += samplesNeeded;
       
-      // Increased breathing time for mobile stability
-      if (i % (isMobile ? 1 : 2) === 0) await new Promise(r => setTimeout(r, isMobile ? 10 : 0));
+      // Gentle throttle to allow mobile CPU to breathe
+      if (i % (isMobile ? 1 : 2) === 0) await new Promise(r => setTimeout(r, isMobile ? 15 : 1));
     }
 
     setExportStatus(prev => ({ ...prev, phase: 'finalizing', progress: 100 }));
@@ -906,7 +919,6 @@ export default function App() {
     if (activeEditIndex === index) setActiveEditIndex(null);
   };
 
-  // iOS Frame Nudge Effect: Set currentTime small and back to 0 to fix black screens
   const nudgeVideoFrame = (el) => {
     if (!el || !isMobile) return;
     const originalTime = el.currentTime;
@@ -1175,8 +1187,8 @@ export default function App() {
                   { id: 'audio', icon: Music, label: 'Mix' }
                 ].map(tab => (
                   <button key={tab.id} onClick={() => setEditorTab(tab.id)} className={`flex-1 py-3.5 flex flex-col items-center gap-1.5 transition-all border-b-2 ${editorTab === tab.id ? 'text-blue-500 border-blue-500 bg-blue-500/5' : 'text-neutral-500 opacity-50 border-transparent hover:opacity-100'}`}>
-                     <tab.icon size={13} strokeWidth={editorTab === tab.id ? 3 : 2} />
-                     <span className="text-[8px] font-black uppercase tracking-[0.2em]">{tab.label}</span>
+                    <tab.icon size={13} strokeWidth={editorTab === tab.id ? 3 : 2} />
+                    <span className="text-[8px] font-black uppercase tracking-[0.2em]">{tab.label}</span>
                   </button>
                 ))}
             </div>
@@ -1277,7 +1289,7 @@ export default function App() {
               <div className="flex-1 min-w-[140px] sm:min-w-[200px]">
                 <div className="flex justify-between items-center mb-2 sm:mb-3">
                   <span className="text-[8px] sm:text-[10px] font-black uppercase tracking-widest text-blue-400">
-                    {exportStatus.phase === 'decoding' ? 'Syncing' : (exportStatus.phase === 'encoding' ? 'Rendering' : 'Finalizing')}
+                    {exportStatus.phase === 'decoding' ? 'Syncing' : (exportStatus.phase === 'encoding' ? 'Rendering' : 'Packaging File')}
                   </span>
                   <span className="text-[9px] sm:text-[11px] font-black tabular-nums">{exportStatus.progress}%</span>
                 </div>
@@ -1292,16 +1304,32 @@ export default function App() {
         {/* PREPARING OVERLAY */}
         {isPreparing && (
           <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/95 backdrop-blur-3xl">
-             <div className="flex flex-col items-center gap-10 text-white text-center">
+              <div className="flex flex-col items-center gap-10 text-white text-center">
                 <div className="relative flex items-center justify-center"><Loader2 className="w-20 h-20 animate-spin text-white/5" /><Layout className="absolute w-8 h-8 text-blue-500 opacity-50" /></div>
                 <div className="space-y-4 px-6">
                   <span className="text-xs font-black uppercase tracking-[0.8em] block">Spinning Up Engine</span>
                   <span className="text-[8px] opacity-30 uppercase tracking-[0.4em] font-bold">Allocating stream buffers</span>
                 </div>
-             </div>
+              </div>
           </div>
         )}
       </div>
+
+      {/* ERROR ALERT MODAL */}
+      {activeQuickTool === 'error_alert' && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-xl z-[500] flex items-center justify-center p-6" onClick={() => setActiveQuickTool(null)}>
+          <div className={`max-w-md w-full p-8 rounded-[2rem] border transition-all animate-in zoom-in-95 ${isDarkMode ? 'bg-[#1a1a1a] border-white/10' : 'bg-white border-black/10'}`}>
+            <div className="flex flex-col items-center text-center gap-6">
+              <div className="w-16 h-16 rounded-full bg-red-500/10 flex items-center justify-center text-red-500">
+                <AlertTriangle size={32} />
+              </div>
+              <h3 className="text-xl font-bold">Export Failed</h3>
+              <p className="text-sm opacity-60 leading-relaxed">The browser ran out of memory or the hardware decoder crashed. Try a lower resolution (720p) or a shorter duration.</p>
+              <button onClick={() => setActiveQuickTool(null)} className={PrimaryButtonStyle()}>DISMISS</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* EXPORT MASTER MODAL */}
       {showExportModal && !exportStatus.active && (
@@ -1321,10 +1349,10 @@ export default function App() {
               <div className="space-y-5">
                 <div className="flex items-center justify-between px-1">
                   <label className="text-[8px] font-bold uppercase tracking-[0.3em] opacity-30">Resolution</label>
-                  {exportRes === '4k' && isMobile && (
+                  {isMobile && (
                     <div className="flex items-center gap-1 text-amber-500">
                       <AlertTriangle size={10} />
-                      <span className="text-[8px] font-black uppercase">High RAM Usage</span>
+                      <span className="text-[8px] font-black uppercase">Mobile Optimizer Enabled</span>
                     </div>
                   )}
                 </div>
@@ -1341,12 +1369,6 @@ export default function App() {
               <div className="space-y-5">
                 <div className="flex items-center justify-between px-1">
                   <label className="text-[8px] font-bold uppercase tracking-[0.3em] opacity-30">Frames Per Second</label>
-                  {exportFps === 60 && isMobile && (
-                    <div className="flex items-center gap-1 text-amber-500">
-                      <AlertTriangle size={10} />
-                      <span className="text-[8px] font-black uppercase">Unstable on mobile</span>
-                    </div>
-                  )}
                 </div>
                 <div className="grid grid-cols-3 gap-4">
                   {[24, 30, 60].map(fps => ( 
