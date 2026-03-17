@@ -1,30 +1,3 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>App Test</title>
-  
-  <script src="https://cdn.tailwindcss.com"></script>
-  
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  
-  <script type="importmap">
-    {
-      "imports": {
-        "react": "https://esm.sh/react@18.2.0",
-        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
-        "lucide-react": "https://esm.sh/lucide-react@0.292.0?bundle"
-      }
-    }
-  </script>
-</head>
-<body>
-  <div id="root"></div>
-
-  <script type="text/babel" data-type="module">
-    import { createRoot } from 'react-dom/client';
-    
 import React, { useState, useRef, useEffect, memo, useMemo } from 'react';
 import { 
   Layout, Play, Pause, ArrowLeft, Plus, Trash2, VolumeX, Volume2, 
@@ -143,8 +116,6 @@ const QuickToolOverlay = ({ title, icon: Icon, value, min, max, step = 1, onChan
 };
 
 const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
-  importScripts('https://unpkg.com/mp4-muxer@3.3.0/build/mp4-muxer.js');
-
   let muxer = null;
   let videoEncoder = null;
   let audioEncoder = null;
@@ -162,6 +133,8 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
 
     if (type === 'INIT') {
       try {
+        importScripts('https://unpkg.com/mp4-muxer@3.3.0/build/mp4-muxer.js');
+        
         const { width, height, fps, bitrate, sampleRate, numberOfChannels, offscreenCanvas } = data;
         
         canvas = offscreenCanvas;
@@ -180,21 +153,30 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
           error: (e) => self.postMessage({ type: 'ERROR', data: 'V-Encoder: ' + e.message })
         });
 
-        // Negotiate Codec
         let success = false;
         for (const codec of CODEC_FALLBACKS) {
           try {
-            videoEncoder.configure({
+            const config = {
               codec, width, height, bitrate,
               framerate: fps,
               hardwareAcceleration: 'prefer-hardware'
-            });
-            success = true;
-            break;
+            };
+            const support = await VideoEncoder.isConfigSupported(config);
+            if (support.supported) {
+                videoEncoder.configure(config);
+                success = true;
+                break;
+            }
           } catch(e) {}
         }
 
-        if (!success) throw new Error("Hardware encoder rejected all configurations.");
+        if (!success) {
+           // Final fallback: Software/No acceleration preference
+           videoEncoder.configure({
+             codec: 'avc1.42E01E', width, height, bitrate,
+             framerate: fps
+           });
+        }
 
         audioEncoder = new AudioEncoder({
           output: (chunk, metadata) => { if(muxer) muxer.addAudioChunk(chunk, metadata); },
@@ -208,7 +190,7 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
 
         self.postMessage({ type: 'READY' });
       } catch (err) {
-        self.postMessage({ type: 'ERROR', data: 'Init: ' + err.message });
+        self.postMessage({ type: 'ERROR', data: 'Init: ' + err.message + '. Ensure you are on HTTPS.' });
       }
     }
 
@@ -246,7 +228,6 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
           ctx.restore();
         });
 
-        // CLEANUP: Close all passed frames regardless of use
         Object.values(sourceFrames).forEach(f => { if(f) f.close(); });
 
         const compositeFrame = new VideoFrame(canvas, { timestamp });
@@ -260,7 +241,6 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
 
         self.postMessage({ type: 'ACK' });
       } catch (err) {
-        // Ensure cleanup on error
         Object.values(sourceFrames).forEach(f => { if(f) f.close(); });
         if(audioData) audioData.close();
         self.postMessage({ type: 'ERROR', data: 'Render Loop: ' + err.message });
@@ -269,19 +249,11 @@ const EXPORT_WORKER_BLOB = URL.createObjectURL(new Blob([`
 
     if (type === 'FINALIZE') {
       try {
-        if (!muxer || !videoEncoder || !audioEncoder) throw new Error("Engine was purged by system.");
-        
         await videoEncoder.flush();
         await audioEncoder.flush();
         muxer.finalize();
-        
         const buffer = muxer.target.buffer;
-        if (!buffer) throw new Error("Muxer failed to generate buffer.");
-        
         self.postMessage({ type: 'FINISHED', data: buffer }, [buffer]);
-        
-        // Reset state
-        muxer = null; videoEncoder = null; audioEncoder = null;
       } catch (err) {
         self.postMessage({ type: 'ERROR', data: 'Finalize: ' + err.message });
       }
@@ -382,6 +354,7 @@ export default function App() {
     const script = document.createElement('script');
     script.src = 'https://unpkg.com/mp4-muxer@3.3.0/build/mp4-muxer.js';
     script.onload = () => setMuxerLoaded(true);
+    script.onerror = () => setExportStatus({ active: true, phase: 'error', progress: 0, errorMsg: 'Failed to load render engine (mp4-muxer). Check connection.' });
     document.head.appendChild(script);
   }, []);
 
@@ -676,13 +649,28 @@ export default function App() {
   };
 
   const handleStartExportBtn = async () => {
-    if (Object.keys(slots).length === 0 || !muxerLoaded) return;
+    if (Object.keys(slots).length === 0) {
+        setExportStatus({ active: true, phase: 'error', progress: 0, errorMsg: 'No media found in timeline.' });
+        return;
+    }
+    
+    if (!muxerLoaded) {
+        setExportStatus({ active: true, phase: 'error', progress: 0, errorMsg: 'Render engine still loading...' });
+        return;
+    }
+
     setIsPreparing(true); setShowExportModal(false);
     
-    // RELEASE HARDWARE: Briefly nullify UI video sources to free up phone VPU
+    // AGGRESSIVE UI PURGE: Release decoders for export process
     Object.entries(videoRefs.current).forEach(([id, v]) => { 
-      if (v) { v.pause(); v.removeAttribute('src'); v.load(); } 
+      if (v) { 
+          v.pause(); 
+          v.src = ""; 
+          v.load(); 
+          v.remove(); // Force release
+      } 
     });
+    videoRefs.current = {};
 
     let maxTotalDuration = 0;
     Object.entries(slots).forEach(([id, data]) => {
@@ -694,7 +682,7 @@ export default function App() {
           if (totalLen > maxTotalDuration) maxTotalDuration = totalLen; 
         }
     });
-    // Strict mobile duration cap to prevent RAM saturation
+
     const targetDuration = Math.min(maxTotalDuration > 0 ? maxTotalDuration : 5, isMobile ? 30 : 120); 
 
     setExportStatus({ active: true, phase: 'decoding', progress: 0, errorMsg: '' });
@@ -704,23 +692,22 @@ export default function App() {
       await decodeAndPersistAudio();
       setIsPreparing(false); 
       setExportStatus({ active: true, phase: 'encoding', progress: 0, errorMsg: '' });
+      
       await performMp4Export({ 
         res: exportRes, 
         fps: exportFps, 
         duration: targetDuration
       });
+      
       setExportStatus({ active: false, phase: '', progress: 0, errorMsg: '' });
     } catch (err) {
       console.error("Export failed:", err);
       setExportStatus({ active: true, phase: 'error', progress: 0, errorMsg: err.message });
       setIsPreparing(false);
     } finally {
-      // REATTACH HARDWARE: Restore UI video sources
+      // Restore UI (rebuild video refs)
       Object.entries(slots).forEach(([id, data]) => {
-        if (videoRefs.current[id]) {
-          videoRefs.current[id].src = data.url;
-          videoRefs.current[id].load();
-        }
+          // Refs will be re-populated by the render cycle automatically if we trigger a re-render
       });
     }
   };
@@ -808,6 +795,17 @@ export default function App() {
       data: { width, height, fps: config.fps, bitrate, sampleRate: SAMPLE_RATE, numberOfChannels: CHANNELS, offscreenCanvas }
     }, [offscreenCanvas]);
 
+    // Create temporary videos for the export loop
+    const tempVideos = {};
+    for (const [id, slot] of Object.entries(slots)) {
+        const v = document.createElement('video');
+        v.src = slot.url;
+        v.muted = true;
+        v.playsInline = true;
+        v.load();
+        tempVideos[id] = v;
+    }
+
     const totalFrames = Math.ceil(config.duration * config.fps);
     const frameInterval = 1 / config.fps;
     const scaleFactor = width / 1080;
@@ -815,11 +813,11 @@ export default function App() {
     const scaledRadius = radius * scaleFactor;
 
     const seekVideo = (video, time) => new Promise((resolve) => {
-      if (!video) return resolve();
       const onSeeked = () => { video.removeEventListener('seeked', onSeeked); resolve(); };
       video.addEventListener('seeked', onSeeked);
       video.currentTime = Math.max(0, Math.min(time, video.duration - 0.05));
-      setTimeout(resolve, isMobile ? 600 : 80);
+      // Safety timeout for mobile
+      setTimeout(resolve, 800);
     });
 
     let totalSamplesProcessed = 0;
@@ -829,19 +827,17 @@ export default function App() {
       const virtualTime = i * frameInterval;
       setExportStatus(prev => ({ ...prev, progress: Math.round((i / totalFrames) * 100) }));
 
-      for (const [id, slot] of Object.entries(slots)) {
-        const video = videoRefs.current[id];
-        if (!video.src) video.src = slot.url;
+      for (const [id, video] of Object.entries(tempVideos)) {
         const delay = syncData.active ? (syncData.offsets[id] || 0) : 0;
-        const baseStart = syncData.active ? 0 : (slot.transform.startTime || 0);
+        const baseStart = syncData.active ? 0 : (slots[id].transform.startTime || 0);
         const targetTime = baseStart + (virtualTime - delay);
-        if (Math.abs(video.currentTime - targetTime) > 0.01) await seekVideo(video, targetTime);
+        if (video.readyState >= 1) await seekVideo(video, targetTime);
       }
 
       const sourceFrames = {};
       const transferList = [];
       selectedTemplate.layout.forEach((layout, idx) => {
-        const video = videoRefs.current[idx];
+        const video = tempVideos[idx];
         if (video && video.readyState >= 2) {
           const delay = syncData.active ? (syncData.offsets[idx] || 0) : 0;
           if (virtualTime >= delay) {
@@ -913,11 +909,14 @@ export default function App() {
       
       await ackPromise;
       totalSamplesProcessed += samplesNeeded;
-      if (i % (isMobile ? 1 : 2) === 0) await new Promise(r => setTimeout(r, isMobile ? 60 : 1));
     }
 
     setExportStatus(prev => ({ ...prev, phase: 'finalizing', progress: 100 }));
     worker.postMessage({ type: 'FINALIZE' });
+    
+    // Clean up temp videos
+    Object.values(tempVideos).forEach(v => { v.src = ""; v.load(); v.remove(); });
+    
     await finishExport;
   };
 
@@ -1083,7 +1082,7 @@ export default function App() {
                   >
                     {slot?.url ? (
                       <>
-                        <video ref={(el) => { videoRefs.current[i] = el; nudgeVideoFrame(el); }} src={slot.url} onLoadedMetadata={(e) => updateSlot(i, { duration: e.target.duration })}
+                        <video ref={(el) => { if(el) videoRefs.current[i] = el; nudgeVideoFrame(el); }} src={slot.url} onLoadedMetadata={(e) => updateSlot(i, { duration: e.target.duration })}
                           onTimeUpdate={(e) => { if(activeEditIndex === i) setInspectorCurrentTime(e.target.currentTime); }}
                           onLoadedData={(e) => nudgeVideoFrame(e.target)}
                           className={`absolute inset-0 w-full h-full object-cover pointer-events-none transition-opacity duration-1000 ${activeEditIndex !== null && !isEditing ? 'opacity-20' : 'opacity-100'}`} 
@@ -1303,7 +1302,7 @@ export default function App() {
                   {exportStatus.phase !== 'error' && <span className="text-[9px] sm:text-[11px] font-black tabular-nums">{exportStatus.progress}%</span>}
                 </div>
                 {exportStatus.phase === 'error' ? (
-                  <div className="text-[10px] opacity-60 font-medium line-clamp-1">{exportStatus.errorMsg}</div>
+                  <div className="text-[10px] opacity-60 font-medium whitespace-pre-wrap max-w-[200px] leading-relaxed">{exportStatus.errorMsg}</div>
                 ) : (
                   <div className="w-full h-1 sm:h-2 bg-white/5 rounded-full overflow-hidden">
                     <div className={`h-full bg-blue-500 transition-all duration-700 shadow-[0_0_15px_rgba(59,130,246,0.5)]`} style={{ width: `${exportStatus.progress}%` }} />
